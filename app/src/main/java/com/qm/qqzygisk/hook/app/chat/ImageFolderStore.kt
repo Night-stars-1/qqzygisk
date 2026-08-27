@@ -114,6 +114,7 @@ object ImageFolderStore {
             }
             saveUsageLocked(store)
         }
+        notifyChanged()
     }
 
     fun folderUsage(folder: File): Int {

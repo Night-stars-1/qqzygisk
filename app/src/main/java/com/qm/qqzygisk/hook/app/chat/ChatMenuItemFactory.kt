@@ -40,7 +40,8 @@ internal object ChatMenuItemFactory {
     /**
      * @param baseClass QQ 当前版本的菜单项抽象基类
      * @param message 当前长按的 AIOMsgItem
-     * @param stringMethods 返回标题的无参 String 方法，全部覆盖成 [title]
+     * @param stringMethods 现有菜单项上返回非空文案的方法，覆盖成 [title]
+     * @param emptyStringMethods 其它必须覆盖的 String 方法，返回空串
      * @param iconMethod 返回图标 resId 的方法；没有图标时为 null
      * @param idMethod 返回菜单项 id 的方法
      * @param clickMethod 抽象点击方法，覆盖后转调 [callback]
@@ -52,6 +53,7 @@ internal object ChatMenuItemFactory {
         icon: Int,
         id: Int,
         stringMethods: List<Method>,
+        emptyStringMethods: List<Method>,
         iconMethod: Method?,
         idMethod: Method,
         clickMethod: Method,
@@ -61,6 +63,7 @@ internal object ChatMenuItemFactory {
             constructors[baseClass] ?: buildConstructor(
                 baseClass,
                 stringMethods,
+                emptyStringMethods,
                 iconMethod,
                 idMethod,
                 clickMethod,
@@ -72,6 +75,7 @@ internal object ChatMenuItemFactory {
     private fun buildConstructor(
         baseClass: Class<*>,
         stringMethods: List<Method>,
+        emptyStringMethods: List<Method>,
         iconMethod: Method?,
         idMethod: Method,
         clickMethod: Method,
@@ -144,23 +148,11 @@ internal object ChatMenuItemFactory {
                         }
                 }
 
-            // 标题相关 getter 在不同 QQ 版本里可能有多个名字，全部返回同一 title。
             stringMethods.forEach { method ->
-                val methodId = MethodId.of(
-                    generatedType,
-                    method.name,
-                    ProtoId.of(stringType),
-                )
-                classBuilder.withMethod { methodBuilder ->
-                    methodBuilder
-                        .of(methodId)
-                        .withFlags(ACC_PUBLIC)
-                        .withCode(1) { code ->
-                            code
-                                .iget(code.l(0), code.this_(), titleField)
-                                .return_object(code.l(0))
-                        }
-                }
+                classBuilder.addStringGetter(generatedType, method.name, titleField)
+            }
+            emptyStringMethods.forEach { method ->
+                classBuilder.addEmptyStringGetter(generatedType, method.name)
             }
 
             iconMethod?.let { method ->
@@ -201,6 +193,49 @@ internal object ChatMenuItemFactory {
             Int::class.javaPrimitiveType,
             Runnable::class.java,
         )
+    }
+
+    private fun ClassBuilder.addStringGetter(
+        generatedType: TypeId,
+        methodName: String,
+        field: FieldId,
+    ) {
+        val methodId = MethodId.of(
+            generatedType,
+            methodName,
+            ProtoId.of(TypeId.of(String::class.java)),
+        )
+        withMethod { methodBuilder ->
+            methodBuilder
+                .of(methodId)
+                .withFlags(ACC_PUBLIC)
+                .withCode(1) { code ->
+                    code
+                        .iget(code.l(0), code.this_(), field)
+                        .return_object(code.l(0))
+                }
+        }
+    }
+
+    private fun ClassBuilder.addEmptyStringGetter(
+        generatedType: TypeId,
+        methodName: String,
+    ) {
+        val methodId = MethodId.of(
+            generatedType,
+            methodName,
+            ProtoId.of(TypeId.of(String::class.java)),
+        )
+        withMethod { methodBuilder ->
+            methodBuilder
+                .of(methodId)
+                .withFlags(ACC_PUBLIC)
+                .withCode(1) { code ->
+                    code
+                        .const_string(code.l(0), "")
+                        .return_object(code.l(0))
+                }
+        }
     }
 
     private fun ClassBuilder.addIntGetter(

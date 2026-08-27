@@ -8,11 +8,13 @@ import com.qm.qqzygisk.hook.app.base.SettingData
 import com.qm.qqzygisk.hook.app.data.HostData
 import com.qm.qqzygisk.hook.app.data.HostData.toAppClass
 import com.qm.qqzygisk.hook.app.chat.NtImageRkeyProvider
+import com.qm.qqzygisk.hook.app.hooker.AntiRevokeHooker
 import com.qm.qqzygisk.hook.app.hooker.ChatMenuHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonButtonHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonPanelHooker
 import com.qm.qqzygisk.hook.app.hooker.EmotionToPicHooker
 import com.qm.qqzygisk.hook.app.hooker.MsgFontHooker
+import com.qm.qqzygisk.hook.app.hooker.RepeaterHooker
 import com.qm.qqzygisk.hook.app.hooker.SettingHooker
 import com.qm.qqzygisk.hook.app.hooker.StartActivityHooker
 import com.qm.qqzygisk.hook.app.hooker.SystemCameraHooker
@@ -56,11 +58,15 @@ object QQEntry {
             onCreate {
                 registerModuleAppActivities(proxy = generalSettingActivityClass)
                 ChatMenuHooker.load()
+                RepeaterHooker.load()
+                AntiRevokeHooker.retry()
+                RepeaterHooker.retry()
             }
         }
         val hooks =
             listOf(
                 ChatMenuHooker,
+                RepeaterHooker,
                 EmoticonButtonHooker,
                 EmoticonPanelHooker,
                 EmotionToPicHooker,
@@ -68,13 +74,20 @@ object QQEntry {
                 SystemCameraHooker,
                 SettingHooker,
                 MsgFontHooker,
+                AntiRevokeHooker,
             )
         hooks.forEach { hooker ->
-            if (hooker.isShow) settings.add(hooker.toSettingData())
-            if (hooker !== ChatMenuHooker) hooker.load()
+            if (hooker.isShow) {
+                settings.add(hooker.toSettingData())
+                settings.addAll(hooker.extraSettings)
+            }
+            if (hooker !== ChatMenuHooker && hooker !== RepeaterHooker) hooker.load()
         }
         StartActivityHooker.decorators.forEach { hooker ->
-            if (hooker.isShow) settings.add(hooker.toSettingData())
+            if (hooker.isShow) {
+                settings.add(hooker.toSettingData())
+                settings.addAll(hooker.extraSettings)
+            }
         }
         AppParasitics.registerToAppLifecycle(packageName)
         Log.info("runed on: ${HostData.toVerStr()}")

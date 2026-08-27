@@ -83,26 +83,31 @@ object EmoticonButtonHooker : BaseHooker() {
             Log.warn("未找到输入栏类: $className")
             return
         }
-        type.resolve()
-            .method {
-                name {
-                    it.contains("View", ignoreCase = true) ||
-                        it.contains("bind", ignoreCase = true) ||
-                        it.contains("init", ignoreCase = true) ||
-                        it.contains("FunBtn", ignoreCase = true) ||
-                        it == "onFinishInflate" ||
-                        it == "onAttachedToWindow" ||
-                        it == "onLayout"
+        runCatching {
+            type.resolve()
+                .method {
+                    name {
+                        it.contains("View", ignoreCase = true) ||
+                            it.contains("bind", ignoreCase = true) ||
+                            it.contains("init", ignoreCase = true) ||
+                            it.contains("FunBtn", ignoreCase = true) ||
+                            it == "onFinishInflate" ||
+                            it == "onAttachedToWindow" ||
+                            it == "onLayout"
+                    }
+                    optional()
                 }
-            }
-            .hookAll {
-                after {
-                    val owner = instance ?: return@after
-                    if (owner is ViewGroup) scanTree(owner)
-                    scanFields(owner)
+                .hookAll {
+                    after {
+                        val owner = instance ?: return@after
+                        if (owner is ViewGroup) scanTree(owner)
+                        scanFields(owner)
+                    }
                 }
-            }
-        Log.info("已挂钩输入栏类: $className")
+            Log.info("已挂钩输入栏类: $className")
+        }.onFailure {
+            Log.warn("挂钩输入栏类失败（当前进程可能没有对应方法）: $className", it)
+        }
     }
 
     private fun attachById(activity: Activity) {

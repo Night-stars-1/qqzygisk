@@ -14,6 +14,7 @@ abstract class BaseSetting {
     open val defaultEnabled: Boolean = false
 
     open val isShow: Boolean = true
+    open val extraSettings: List<SettingData> = emptyList()
 
     fun toSettingData() = SettingData(key, name, description, defaultEnabled)
 }

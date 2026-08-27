@@ -1,5 +1,8 @@
 package com.qm.qqzygisk.hook.app.chat
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.utils.Log
 import java.io.File
@@ -48,6 +51,38 @@ object ChatImageSender {
         currentAioParam = WeakReference(value)
         runCatching { lastContact = extractContact(value) }
             .onFailure { Log.warn("缓存聊天会话失败", it) }
+    }
+
+    fun captureFrom(owner: Any?) {
+        if (owner == null) return
+        updateAioParam(owner)
+        updateAioParamFrom(owner)
+    }
+
+    fun captureFromContext(context: Context?) {
+        var current: Context? = context
+        while (current != null) {
+            if (current is Activity) {
+                captureFrom(current)
+                current.window?.decorView?.let(::captureFrom)
+                return
+            }
+            current = (current as? ContextWrapper)?.baseContext
+        }
+    }
+
+    fun currentContactOrNull(): ContactDescriptor? {
+        val live = currentAioParam?.get()
+        if (live != null) {
+            runCatching { return extractContact(live).also { lastContact = it } }
+                .onFailure { Log.warn("读取当前会话失败，将使用上次会话", it) }
+        }
+        return lastContact
+    }
+
+    fun contactFromCurrentAioParam(): ContactDescriptor? {
+        val aioParam = currentAioParam?.get() ?: return null
+        return runCatching { extractContact(aioParam) }.getOrNull()
     }
 
     /** 发送本地文件。默认按普通图片，type 可选表情。 */

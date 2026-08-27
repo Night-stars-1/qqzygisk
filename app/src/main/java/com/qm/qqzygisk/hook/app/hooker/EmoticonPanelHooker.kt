@@ -242,15 +242,22 @@ object EmoticonPanelHooker : BaseHooker() {
                 }
             }
 
-        FavoriteEmoticonInfo
-            .resolve()
-            .method { name = "send" }
-            .hookAll {
-                after {
-                    if (!enabled) return@after
-                    val path = instance.get<String>("path") ?: return@after
-                    ImageFolderStore.recordUsage(File(path))
+        runCatching {
+            FavoriteEmoticonInfo
+                .resolve()
+                .method {
+                    name = "send"
+                    optional()
                 }
-            }
+                .hookAll {
+                    after {
+                        if (!enabled) return@after
+                        val path = instance.get<String>("path") ?: return@after
+                        ImageFolderStore.recordUsage(File(path))
+                    }
+                }
+        }.onFailure {
+            Log.warn("挂钩 FavoriteEmoticonInfo.send 失败", it)
+        }
     }
 }

@@ -870,6 +870,7 @@ class SaveImagePanel private constructor(
             ImageFolderStore.saveImage(folder, image.bytes, image.extension)
         }.onSuccess {
             Toast.makeText(context, "已保存到「${folder.name}」", Toast.LENGTH_SHORT).show()
+            panelDialog?.dismiss()
         }.onFailure {
             Log.error("保存聊天图片失败", it)
             Toast.makeText(context, it.message ?: "保存失败", Toast.LENGTH_SHORT).show()
