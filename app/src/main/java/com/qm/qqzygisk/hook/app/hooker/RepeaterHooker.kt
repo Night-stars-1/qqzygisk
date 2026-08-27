@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 object RepeaterHooker : BaseHooker() {
     override val key = "repeat_plus"
     override val name = "长按菜单+1"
-    override val description = "长按消息菜单中显示 +1，点击把该条消息再发一遍。红包等不支持。"
+    override val description = "长按消息菜单中显示 +1。红包等不支持。"
     override val defaultEnabled = false
 
     private const val BUTTON_KEY = "repeat_plus_button"
@@ -50,7 +50,7 @@ object RepeaterHooker : BaseHooker() {
         SettingData(
             key = BUTTON_KEY,
             name = "消息旁+1",
-            description = "在消息旁边显示 +1 按钮，点击把该条消息再发一遍。红包等不支持。",
+            description = "在消息旁边显示 +1 按钮。红包等不支持。",
             defaultEnabled = false,
         ),
     )

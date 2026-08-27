@@ -1,5 +1,6 @@
 package com.qm.qqzygisk.hook.app.hooker
 
+import android.app.Application
 import android.graphics.drawable.Drawable
 import android.widget.ImageView
 import android.widget.RelativeLayout
@@ -242,6 +243,7 @@ object EmoticonPanelHooker : BaseHooker() {
                 }
             }
 
+        if (android.app.Application.getProcessName().contains(':')) return
         runCatching {
             FavoriteEmoticonInfo
                 .resolve()

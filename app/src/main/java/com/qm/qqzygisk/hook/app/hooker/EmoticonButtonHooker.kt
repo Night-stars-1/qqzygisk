@@ -1,6 +1,7 @@
 package com.qm.qqzygisk.hook.app.hooker
 
 import android.app.Activity
+import android.app.Application
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageButton
@@ -72,9 +73,11 @@ object EmoticonButtonHooker : BaseHooker() {
                 }
             }
 
-        hookClass("com.tencent.qqnt.aio.shortcutbar.PanelIconLinearLayout")
-        hookClass("com.tencent.mobileqq.aio.input.simpleui.AIOInputSimpleUIVBDelegate")
-        hookClass("com.tencent.mobileqq.aio.input.simpleui.b")
+        if (!android.app.Application.getProcessName().contains(':')) {
+            hookClass("com.tencent.qqnt.aio.shortcutbar.PanelIconLinearLayout")
+            hookClass("com.tencent.mobileqq.aio.input.simpleui.AIOInputSimpleUIVBDelegate")
+            hookClass("com.tencent.mobileqq.aio.input.simpleui.b")
+        }
     }
 
     private fun hookClass(className: String) {
