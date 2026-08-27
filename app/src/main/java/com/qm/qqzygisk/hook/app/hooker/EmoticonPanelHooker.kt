@@ -247,7 +247,6 @@ object EmoticonPanelHooker : BaseHooker() {
                 .resolve()
                 .method {
                     name = "send"
-                    optional()
                 }
                 .hookAll {
                     after {

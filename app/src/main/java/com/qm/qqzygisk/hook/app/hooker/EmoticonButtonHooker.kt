@@ -95,7 +95,6 @@ object EmoticonButtonHooker : BaseHooker() {
                             it == "onAttachedToWindow" ||
                             it == "onLayout"
                     }
-                    optional()
                 }
                 .hookAll {
                     after {
