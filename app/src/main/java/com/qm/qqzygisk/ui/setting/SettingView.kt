@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
@@ -36,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.KeyboardType
 import com.qm.qqzygisk.hook.app.QQEntry.settings
 import com.qm.qqzygisk.hook.app.chat.ImageFolderStore
 import com.qm.qqzygisk.hook.utils.HookSettings
@@ -115,6 +117,27 @@ private fun MainSettings(
                 }
             )
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        var historyLimitText by remember {
+            mutableStateOf(ImageFolderStore.historyLimit().toString())
+        }
+        OutlinedTextField(
+            value = historyLimitText,
+            onValueChange = { raw ->
+                val filtered = raw.filter { it.isDigit() }.take(3)
+                historyLimitText = filtered
+                filtered.toIntOrNull()?.let { value ->
+                    if (value in ImageFolderStore.MIN_HISTORY_LIMIT..ImageFolderStore.MAX_HISTORY_LIMIT) {
+                        HookSettings.setInt(ImageFolderStore.HISTORY_LIMIT_KEY, value)
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("历史表情数量") },
+            supportingText = { Text("按发送次数显示，范围 1–500，默认 80") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+        )
         Spacer(modifier = Modifier.height(8.dp))
         HorizontalDivider()
         Row(

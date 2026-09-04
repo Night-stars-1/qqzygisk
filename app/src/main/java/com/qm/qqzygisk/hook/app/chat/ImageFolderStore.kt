@@ -33,7 +33,10 @@ object ImageFolderStore {
     private const val LAST_FOLDER_KEY = "emoticon_panel_last_folder"
     private const val USAGE_FILE = ".usage.json"
     const val HISTORY_DIR_NAME = "__history__"
-    private const val HISTORY_LIMIT = 80
+    const val HISTORY_LIMIT_KEY = "history_limit"
+    const val DEFAULT_HISTORY_LIMIT = 80
+    const val MIN_HISTORY_LIMIT = 1
+    const val MAX_HISTORY_LIMIT = 500
     private val usageLock = Any()
     @Volatile
     private var usageCache: UsageStore? = null
@@ -57,6 +60,10 @@ object ImageFolderStore {
         folder.absolutePath.startsWith(root().absolutePath + "/")
 
     fun historyFolder(): File = File(root(), HISTORY_DIR_NAME)
+
+    fun historyLimit(): Int =
+        HookSettings.getInt(HISTORY_LIMIT_KEY, DEFAULT_HISTORY_LIMIT)
+            .coerceIn(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT)
 
     fun isHistoryFolder(folder: File): Boolean = folder.name == HISTORY_DIR_NAME
 
@@ -200,7 +207,7 @@ object ImageFolderStore {
             )
             .map { File(it.key) }
             .filter { it.isFile && isImageFile(it) }
-            .take(HISTORY_LIMIT)
+            .take(historyLimit())
     }
 
     private fun bump(map: MutableMap<String, UsageEntry>, key: String, now: Long) {

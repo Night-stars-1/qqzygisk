@@ -19,6 +19,8 @@ internal object HookSettings {
     private val defaults = ConcurrentHashMap<String, Boolean>()
     private val stringValues = ConcurrentHashMap<String, String>()
     private val stringDefaults = ConcurrentHashMap<String, String>()
+    private val intValues = ConcurrentHashMap<String, Int>()
+    private val intDefaults = ConcurrentHashMap<String, Int>()
 
     @Synchronized
     fun initialize(context: Context) {
@@ -41,10 +43,14 @@ internal object HookSettings {
                         stringValues[key] = prefs.getString(key, stringDefaults.getValue(key))
                             ?: stringDefaults.getValue(key)
                     }
+                    intDefaults.containsKey(key) -> {
+                        intValues[key] = prefs.getInt(key, intDefaults.getValue(key))
+                    }
                     else -> prefs.all[key]?.let { value ->
                         when (value) {
                             is Boolean -> values[key] = value
                             is String -> stringValues[key] = value
+                            is Int -> intValues[key] = value
                         }
                     }
                 }
@@ -86,6 +92,20 @@ internal object HookSettings {
     fun setString(key: String, value: String) {
         stringValues[key] = value
         preferences?.edit(commit = true) { putString(key, value) }
+    }
+
+    fun getInt(key: String, defaultValue: Int): Int {
+        intDefaults.putIfAbsent(key, defaultValue)
+        intValues[key]?.let { return it }
+
+        return preferences?.getInt(key, defaultValue)
+            ?.also { intValues[key] = it }
+            ?: defaultValue
+    }
+
+    fun setInt(key: String, value: Int) {
+        intValues[key] = value
+        preferences?.edit(commit = true) { putInt(key, value) }
     }
 
     fun dump(settings: Iterable<SettingData>): String {

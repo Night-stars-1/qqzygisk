@@ -15,10 +15,14 @@ object AnimatedImageLoader {
     private val bindings = WeakHashMap<ImageView, AnimationBinding>()
 
     fun decode(file: File, maxSize: Int): Drawable? =
-        decode(ImageDecoder.createSource(file), maxSize)
+        decode(ImageDecoder.createSource(file), maxSize, fileLooksAnimated(file.name))
 
     fun decode(bytes: ByteArray, maxSize: Int): Drawable? =
-        decode(ImageDecoder.createSource(ByteBuffer.wrap(bytes)), maxSize)
+        decode(
+            ImageDecoder.createSource(ByteBuffer.wrap(bytes)),
+            maxSize,
+            bytesLookAnimated(bytes),
+        )
 
     fun bind(view: ImageView, drawable: Drawable) {
         if (view.drawable === drawable) {
@@ -57,10 +61,14 @@ object AnimatedImageLoader {
         view.setImageDrawable(null)
     }
 
-    private fun decode(source: ImageDecoder.Source, maxSize: Int): Drawable? = runCatching {
+    private fun decode(
+        source: ImageDecoder.Source,
+        maxSize: Int,
+        maybeAnimated: Boolean,
+    ): Drawable? = runCatching {
         ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
-            // setTargetSize on GIF/WebP drops animation and returns a still BitmapDrawable.
-            if (info.isAnimated) return@decodeDrawable
+            // setTargetSize flattens GIF/WebP to a still BitmapDrawable.
+            if (info.isAnimated || maybeAnimated) return@decodeDrawable
             val width = info.size.width
             val height = info.size.height
             val longestSide = maxOf(width, height)
@@ -73,6 +81,29 @@ object AnimatedImageLoader {
             }
         }
     }.getOrNull()
+
+    private fun fileLooksAnimated(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".apng")
+    }
+
+    private fun bytesLookAnimated(bytes: ByteArray): Boolean {
+        if (bytes.size >= 6 &&
+            bytes[0] == 'G'.code.toByte() &&
+            bytes[1] == 'I'.code.toByte() &&
+            bytes[2] == 'F'.code.toByte()
+        ) {
+            return true
+        }
+        if (bytes.size >= 12 &&
+            bytes[0] == 'R'.code.toByte() &&
+            bytes[8] == 'W'.code.toByte() &&
+            bytes[9] == 'E'.code.toByte()
+        ) {
+            return true
+        }
+        return false
+    }
 
     private data class AnimationBinding(
         val animation: Animatable,
