@@ -105,49 +105,26 @@ class LocalDocumentEmoticonProvider : ExtraEmoticonProvider() {
     }
 
     private class HistoryPanel : ExtraEmoticonPanel() {
-        private var emoticons: List<ExtraEmoticon> = listOf()
-        private val emoticonByPath = mutableMapOf<String, ExtraEmoticon>()
-        private var lastEmoticonUpdateTime = 0L
-
-        fun invalidate() {
-            lastEmoticonUpdateTime = 0L
-        }
-
         override fun uniqueId(): String = ImageFolderStore.HISTORY_DIR_NAME
 
         override fun emoticons(): List<ExtraEmoticon> {
-            if (System.currentTimeMillis() - lastEmoticonUpdateTime > 1000) {
-                lastEmoticonUpdateTime = System.currentTimeMillis()
-                updateEmoticons()
-            }
-            return emoticons
-        }
-
-        override fun emoticonPanelIconURL(): String? = null
-
-        private fun updateEmoticons() {
             val infoObj = "com.tencent.mobileqq.emoticonview.FavoriteEmoticonInfo"
                 .toAppClass()
                 .resolve()
                 .firstConstructor()
-            val files = ImageFolderStore.images(ImageFolderStore.historyFolder())
-            val seen = mutableSetOf<String>()
-            emoticons = files.map { file ->
-                val path = file.absolutePath
-                seen.add(path)
-                emoticonByPath.getOrPut(path) {
-                    object : ExtraEmoticon() {
-                        val info = infoObj.create()
-                        init {
-                            info.set("path", path)
-                            info.set("actionData", "${uniqueId()}:$path")
-                        }
-                        override fun QQEmoticonObject(): Any = info
+            return ImageFolderStore.images(ImageFolderStore.historyFolder()).map { file ->
+                object : ExtraEmoticon() {
+                    val info = infoObj.create()
+                    init {
+                        info.set("path", file.absolutePath)
+                        info.set("actionData", "${uniqueId()}:${file.absolutePath}")
                     }
+                    override fun QQEmoticonObject(): Any = info
                 }
             }
-            emoticonByPath.keys.retainAll(seen)
         }
+
+        override fun emoticonPanelIconURL(): String? = null
     }
 
     private val panelsMap = mutableMapOf<String, Panel>()
@@ -155,7 +132,6 @@ class LocalDocumentEmoticonProvider : ExtraEmoticonProvider() {
 
     fun invalidateCache() {
         panelsMap.values.forEach { it.invalidate() }
-        historyPanel.invalidate()
     }
 
     override fun extraEmoticonList(): List<ExtraEmoticonPanel> {
