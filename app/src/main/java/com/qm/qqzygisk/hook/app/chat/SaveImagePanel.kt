@@ -90,6 +90,7 @@ class SaveImagePanel private constructor(
     private val thumbnailCache = object : LruCache<String, Bitmap>(THUMBNAIL_CACHE_KB) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount / 1024
     }
+    private val animatedThumbnails = object : LruCache<String, Drawable>(64) {}
     private val thumbnailRequests = ConcurrentHashMap.newKeySet<String>()
     private var thumbnailRefreshPosted = false
     private var thumbnailRefreshGeneration = 0
@@ -111,6 +112,7 @@ class SaveImagePanel private constructor(
             folderCoverExecutor.shutdownNow()
             thumbnailRequests.clear()
             synchronized(thumbnailCache) { thumbnailCache.evictAll() }
+            synchronized(animatedThumbnails) { animatedThumbnails.evictAll() }
             previewDialog?.dismiss()
             previewDialog = null
             panelDialog = null
@@ -517,13 +519,26 @@ class SaveImagePanel private constructor(
         generation: Int,
     ) {
         val key = thumbnailKey(file, size)
-        image.tag = key
-        synchronized(thumbnailCache) { thumbnailCache.get(key) }?.let {
-            AnimatedImageLoader.clear(image)
-            image.setImageBitmap(it)
+        if (image.tag == key && image.drawable != null) {
+            AnimatedImageLoader.bind(image, image.drawable)
             return
         }
-        AnimatedImageLoader.clear(image)
+        val sameKey = image.tag == key
+        image.tag = key
+        synchronized(thumbnailCache) { thumbnailCache.get(key) }?.let {
+            if (!sameKey || image.drawable == null) {
+                AnimatedImageLoader.clear(image)
+                image.setImageBitmap(it)
+            }
+            return
+        }
+        synchronized(animatedThumbnails) { animatedThumbnails.get(key) }?.let { cached ->
+            AnimatedImageLoader.bind(image, cached)
+            return
+        }
+        if (!sameKey) {
+            AnimatedImageLoader.clear(image)
+        }
         val requestKey = "$generation:$key"
         if (!thumbnailRequests.add(requestKey)) return
         runCatching {
@@ -535,6 +550,8 @@ class SaveImagePanel private constructor(
                     val bitmap = (drawable as? BitmapDrawable)?.bitmap
                     if (bitmap != null) {
                         synchronized(thumbnailCache) { thumbnailCache.put(key, bitmap) }
+                    } else {
+                        synchronized(animatedThumbnails) { animatedThumbnails.put(key, drawable) }
                     }
                     publishThumbnail(key, drawable, bitmap, generation)
                 } finally {
@@ -545,6 +562,7 @@ class SaveImagePanel private constructor(
             thumbnailRequests.remove(requestKey)
         }
     }
+
 
     private fun publishThumbnail(
         key: String,

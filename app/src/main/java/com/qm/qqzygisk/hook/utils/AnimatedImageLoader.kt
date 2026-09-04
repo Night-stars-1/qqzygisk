@@ -21,6 +21,11 @@ object AnimatedImageLoader {
         decode(ImageDecoder.createSource(ByteBuffer.wrap(bytes)), maxSize)
 
     fun bind(view: ImageView, drawable: Drawable) {
+        if (view.drawable === drawable) {
+            val animation = drawable as? Animatable ?: return
+            if (view.isAttachedToWindow && !animation.isRunning) animation.start()
+            return
+        }
         clear(view)
         view.setImageDrawable(drawable)
 
@@ -54,6 +59,8 @@ object AnimatedImageLoader {
 
     private fun decode(source: ImageDecoder.Source, maxSize: Int): Drawable? = runCatching {
         ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
+            // setTargetSize on GIF/WebP drops animation and returns a still BitmapDrawable.
+            if (info.isAnimated) return@decodeDrawable
             val width = info.size.width
             val height = info.size.height
             val longestSide = maxOf(width, height)
