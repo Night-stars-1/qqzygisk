@@ -101,11 +101,13 @@ class SaveImagePanel private constructor(
     private val browseOnly get() = imageUrls.isEmpty()
 
     fun show() {
+        Log.info("[ImageAnim] panel-open browseOnly=$browseOnly")
         val dialog = Dialog(context, android.R.style.Theme_Translucent_NoTitleBar)
         panelDialog = dialog
         dialog.setContentView(buildContent(dialog))
         dialog.setCanceledOnTouchOutside(true)
         dialog.setOnDismissListener {
+            Log.info("[ImageAnim] panel-dismiss generation=$imageGeneration")
             closed = true
             imageGeneration++
             thumbnailExecutor.shutdownNow()
@@ -499,13 +501,14 @@ class SaveImagePanel private constructor(
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val file = getItem(position)
             val image = (convertView as? ImageView) ?: ImageView(context).apply {
+                // Recycled cells must retain GridView's forceAdd and other layout metadata.
+                layoutParams = AbsListView.LayoutParams(cellSize, cellSize)
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 background = rounded(colors.preview, context.dp(12).toFloat())
                 clipToOutline = true
                 outlineProvider = roundedOutline(context.dp(12).toFloat())
                 setPadding(context.dp(4), context.dp(4), context.dp(4), context.dp(4))
             }
-            image.layoutParams = AbsListView.LayoutParams(cellSize, cellSize)
             image.contentDescription = "发送 ${file.name}"
             loadImageThumbnail(file, cellSize, image, generation)
             return image
@@ -527,12 +530,15 @@ class SaveImagePanel private constructor(
         image.tag = key
         synchronized(thumbnailCache) { thumbnailCache.get(key) }?.let {
             if (!sameKey || image.drawable == null) {
+                Log.info("[ImageAnim] cache-hit type=bitmap generation=$generation key=$key")
                 AnimatedImageLoader.clear(image)
                 image.setImageBitmap(it)
+                AnimatedImageLoader.trace("cache-bitmap-applied", image)
             }
             return
         }
         synchronized(animatedThumbnails) { animatedThumbnails.get(key) }?.let { cached ->
+            AnimatedImageLoader.trace("cache-hit-animated generation=$generation", image, cached)
             AnimatedImageLoader.bind(image, cached)
             return
         }
@@ -550,8 +556,10 @@ class SaveImagePanel private constructor(
                     val bitmap = (drawable as? BitmapDrawable)?.bitmap
                     if (bitmap != null) {
                         synchronized(thumbnailCache) { thumbnailCache.put(key, bitmap) }
+                        Log.info("[ImageAnim] cache-store type=bitmap generation=$generation key=$key")
                     } else {
                         synchronized(animatedThumbnails) { animatedThumbnails.put(key, drawable) }
+                        Log.info("[ImageAnim] cache-store type=drawable generation=$generation key=$key")
                     }
                     publishThumbnail(key, drawable, bitmap, generation)
                 } finally {
@@ -560,6 +568,7 @@ class SaveImagePanel private constructor(
             }
         }.onFailure {
             thumbnailRequests.remove(requestKey)
+            Log.error("[ImageAnim] thumbnail-request-failed generation=$generation key=$key", it)
         }
     }
 
@@ -577,6 +586,7 @@ class SaveImagePanel private constructor(
             for (index in 0 until grid.childCount) {
                 val image = grid.getChildAt(index) as? ImageView ?: continue
                 if (image.tag == key) {
+                    AnimatedImageLoader.trace("publish generation=$generation", image, drawable)
                     if (bitmap != null) {
                         AnimatedImageLoader.clear(image)
                         image.setImageBitmap(bitmap)
@@ -584,8 +594,10 @@ class SaveImagePanel private constructor(
                         AnimatedImageLoader.bind(image, drawable)
                     }
                     applied = true
+                    AnimatedImageLoader.trace("publish-applied generation=$generation", image)
                 }
             }
+            if (!applied) Log.info("[ImageAnim] publish-no-target generation=$generation key=$key")
             if (!applied) requestThumbnailRefresh(grid, generation)
         }
     }
@@ -658,8 +670,20 @@ class SaveImagePanel private constructor(
             }
     }
 
+    private fun traceVisibleThumbnails(event: String) {
+        val grid = imageGrid ?: return
+        Log.info("[ImageAnim] $event generation=$imageGeneration first=${grid.firstVisiblePosition} count=${grid.childCount}")
+        for (index in 0 until grid.childCount) {
+            val image = grid.getChildAt(index) as? ImageView ?: continue
+            AnimatedImageLoader.trace("$event index=${grid.firstVisiblePosition + index}", image)
+        }
+    }
+
     private fun showEmoticonPreview(file: File) {
+        Log.info("[ImageAnim] preview-open source=${file.absolutePath} bytes=${file.length()}")
+        traceVisibleThumbnails("before-preview")
         val preview = ImageView(context).apply {
+            tag = "preview:${file.absolutePath}"
             scaleType = ImageView.ScaleType.FIT_CENTER
             adjustViewBounds = true
             background = rounded(colors.preview, context.dp(20).toFloat())
@@ -703,10 +727,17 @@ class SaveImagePanel private constructor(
             .create()
             .also { dialog ->
                 dialog.setOnDismissListener {
+                    AnimatedImageLoader.trace("preview-dismiss", preview)
                     AnimatedImageLoader.clear(preview)
                     if (previewDialog === dialog) previewDialog = null
                 }
                 dialog.show()
+                preview.postDelayed({
+                    if (!closed && previewDialog === dialog && dialog.isShowing) {
+                        AnimatedImageLoader.trace("preview-after-1500ms", preview)
+                        traceVisibleThumbnails("grid-after-preview-1500ms")
+                    }
+                }, 1500L)
             }
     }
 
