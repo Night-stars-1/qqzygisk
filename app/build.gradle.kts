@@ -35,8 +35,8 @@ android {
         applicationId = "com.qm.qqzygisk"
         minSdk = 28
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.10"
+        versionCode = 10
+        versionName = "1.11"
         ndk.abiFilters.addAll(arrayOf("armeabi-v7a", "arm64-v8a"))
     }
 
@@ -215,7 +215,6 @@ tasks.register("MagiskZipTask") {
         unzip(zipFile, tempDir)
         val apk =
             listOf(
-                File(layout.projectDirectory.asFile, "release/app-release.apk"),
                 File(layout.buildDirectory.asFile.get(), "outputs/apk/release/app-release.apk"),
                 File(layout.buildDirectory.asFile.get(), "outputs/apk/release/app-release-unsigned.apk"),
             ).firstOrNull { it.isFile } ?: error("未找到 app-release.apk")
