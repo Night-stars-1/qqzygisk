@@ -12,12 +12,18 @@ package com.qm.qqzygisk.hook.app.chat
  *   Group            { group_code = 1 }
  *   ContentHead      { type = 1, sub_type = 2 }
  *   MessageBody      { msg_content = 2 }
- *   C2CMsgRecall     { MsgInfo msg_infos = 1 { from_uid = 1, to_uid = 2, msg_uid = 4, msg_seq = 20 } }
+ *   C2CMsgRecall     { repeated MsgInfo msg_infos = 1
+ *                        { from_uid = 1, to_uid = 2, msg_uid = 4, msg_seq = 20 } }
  *   GroupMsgRecall   { op_type = 1, group_code = 4,
- *                      MsgRecallInfo msg_recall = 11 { operator_uid = 1, msg_infos = 3 } }
+ *                      MsgRecallInfo msg_recall = 11 { operator_uid = 1,
+ *                        repeated MsgInfo msg_infos = 3 { msg_seq = 1 } } }
  *
  * ContentHead 528/138 is a C2C recall, 732/17 a group recall, and the group payload
  * carries 7 leading bytes before GroupMsgRecall starts.
+ *
+ * Only those msg_seq fields can locate the original message. msg_uid/client_seq and
+ * the group packet's outer field 37 hold different numbers and are never used;
+ * navigating with them opens the conversation at the wrong message.
  *
  * `InfoSyncPush` is deliberately ignored: it is a batched offline sync packet and
  * dropping it would lose real messages.
@@ -33,6 +39,10 @@ internal object RevokePushParser {
     /**
      * [peerCandidates] is ordered by confidence: the exact protobuf field first, then
      * fallbacks in case a QQ build moves things around.
+     *
+     * [messageSeqs] holds the msg_seq of every revoked message that provably belongs
+     * to this conversation, in packet order and without duplicates. It stays empty
+     * when the push carries no usable seq, and a tip then renders without navigation.
      */
     data class RecallPush(
         val kind: Kind,
@@ -40,6 +50,7 @@ internal object RevokePushParser {
         val operatorUid: String,
         val peerCandidates: List<String>,
         val fingerprint: String,
+        val messageSeqs: List<Long>,
     )
 
     fun inspect(
@@ -65,14 +76,21 @@ internal object RevokePushParser {
         }
     }
 
-    /** C2CMsgRecall.msg_infos[0]: from_uid is always the operator (QAuxiliary). */
+    /**
+     * C2CMsgRecall.msg_infos is repeated and QQ batches several revoked messages into
+     * one push. `from_uid` of the first entry is always the operator (QAuxiliary), so
+     * that entry decides the conversation and every later entry must repeat both
+     * uids exactly before its seq may be linked.
+     */
     private fun c2cRecall(
         content: ByteArray,
         routing: ProtoMessage?,
         selfUid: String,
         fingerprint: String,
     ): RecallPush? {
-        val info = parse(content, 0, content.size).message(1) ?: return null
+        val envelope = parse(content, 0, content.size)
+        val infos = envelope.messages(1)
+        val info = infos.firstOrNull() ?: return null
         val fromUid = info.string(1).orEmpty()
         val toUid = info.string(2).orEmpty()
         val operator =
@@ -95,7 +113,28 @@ internal object RevokePushParser {
             operatorUid = operator,
             peerCandidates = peers.filter { NtMsgAccess.isUid(it) && it != selfUid },
             fingerprint = fingerprint,
+            messageSeqs = c2cSeqs(infos, fromUid, toUid),
         )
+    }
+
+    /**
+     * Only seqs whose entry repeats the first entry's from/to uid verbatim are linked.
+     * An entry with a different direction belongs to another conversation, and an
+     * empty uid makes the batch unattributable, so nothing is linked at all.
+     */
+    private fun c2cSeqs(
+        infos: List<ProtoMessage>,
+        fromUid: String,
+        toUid: String,
+    ): List<Long> {
+        if (fromUid.isEmpty() || toUid.isEmpty()) return emptyList()
+        val seqs = LinkedHashSet<Long>()
+        infos.forEach { info ->
+            if (info.string(1) != fromUid || info.string(2) != toUid) return@forEach
+            val seq = info.varint(20) ?: return@forEach
+            if (seq > 0) seqs.add(seq)
+        }
+        return seqs.toList()
     }
 
     /** GroupMsgRecall: op_type must be 7, group_code is field 4, operator in msg_recall. */
@@ -125,7 +164,21 @@ internal object RevokePushParser {
             operatorUid = operator,
             peerCandidates = peers.filter { it.length in 5..12 },
             fingerprint = fingerprint,
+            messageSeqs = groupSeqs(info),
         )
+    }
+
+    /**
+     * msgs all belong to the single recalled group, so the only condition is a
+     * positive msg_seq. The group packet's outer seq (field 37) is not a msg_seq.
+     */
+    private fun groupSeqs(info: ProtoMessage?): List<Long> {
+        val seqs = LinkedHashSet<Long>()
+        info?.messages(3)?.forEach { entry ->
+            val seq = entry.varint(1) ?: return@forEach
+            if (seq > 0) seqs.add(seq)
+        }
+        return seqs.toList()
     }
 
     private class ProtoMessage {
@@ -145,6 +198,8 @@ internal object RevokePushParser {
         fun bytes(field: Int): ByteArray? = fields[field]?.firstNotNullOfOrNull { it as? ByteArray }
 
         fun message(field: Int): ProtoMessage? = fields[field]?.firstNotNullOfOrNull { it as? ProtoMessage }
+
+        fun messages(field: Int): List<ProtoMessage> = fields[field]?.filterIsInstance<ProtoMessage>().orEmpty()
 
         private fun ordered(): List<Any> = fields.entries.sortedBy { it.key }.flatMap { it.value }
 

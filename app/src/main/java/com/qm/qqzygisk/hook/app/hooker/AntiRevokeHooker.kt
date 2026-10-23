@@ -80,7 +80,11 @@ object AntiRevokeHooker : BaseHooker() {
             Log.info("anti-revoke passing own recall ${push.kind}")
             return
         }
-        RevokeTip.show(push.chatType, push.peerCandidates, push.operatorUid, push.fingerprint)
+        // Read the account now, while the push is being handled: the tip worker may run
+        // after an account switch, and a retained mark must belong to the account that
+        // actually received this revoke.
+        val accountUin = runCatching { NtMsgAccess.selfUin() }.getOrDefault("")
+        RevokeTip.show(accountUin, push.chatType, push.peerCandidates, push.operatorUid, push.fingerprint, push.messageSeqs)
         call.result = null
         Log.info("anti-revoke blocked ${push.kind} peers=${push.peerCandidates}")
     }
@@ -143,12 +147,14 @@ object AntiRevokeHooker : BaseHooker() {
         if (recentLocalRecall()) return
         val list = call.args.getOrNull(0) as? MutableList<*> ?: return
         val self = NtMsgAccess.selfIds()
+        // Captured while the notify is handled, not when the tip worker runs.
+        val accountUin = runCatching { NtMsgAccess.selfUin() }.getOrDefault("")
         val iterator = list.iterator()
         var removed = 0
         while (iterator.hasNext()) {
             val item = iterator.next() ?: continue
             if (!isPeerRevokeInfo(item, self)) continue
-            tipFromFacade(item)
+            tipFromFacade(item, accountUin)
             iterator.remove()
             removed++
         }
@@ -182,7 +188,10 @@ object AntiRevokeHooker : BaseHooker() {
         return NtMsgAccess.revokeNotifyOperator(item).isNotEmpty() && (seq != null || troop != null)
     }
 
-    private fun tipFromFacade(item: Any) {
+    private fun tipFromFacade(
+        item: Any,
+        accountUin: String,
+    ) {
         val chatType = NtMsgAccess.normalizedChatType(item)
         val raw =
             NtMsgAccess
@@ -209,7 +218,7 @@ object AntiRevokeHooker : BaseHooker() {
             } else {
                 NtMsgAccess.uidFromUin(operator).orEmpty()
             }
-        RevokeTip.show(chatType, listOf(peer), operatorUid, "facade:$chatType:$peer:$seq")
+        RevokeTip.show(accountUin, chatType, listOf(peer), operatorUid, "facade:$chatType:$peer:$seq", listOf(seq))
     }
 
     private fun hookOnce(

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      已撤回标记在宿主 AIO 消息行根 View 上保存行状态的 tag key。
+      只是模块自己的 id 常量，用 setTag(id, obj) 不会和宿主现有 tag 冲突。
+    -->
+    <item name="qqz_recalled_badge" type="id" />
+</resources>

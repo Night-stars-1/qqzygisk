@@ -14,6 +14,7 @@ import com.qm.qqzygisk.hook.app.hooker.EmoticonPanelHooker
 import com.qm.qqzygisk.hook.app.hooker.EmotionToPicHooker
 import com.qm.qqzygisk.hook.app.hooker.MsgFontHooker
 import com.qm.qqzygisk.hook.app.hooker.QQPatchBlockHooker
+import com.qm.qqzygisk.hook.app.hooker.RecalledBadgeHooker
 import com.qm.qqzygisk.hook.app.hooker.RepeaterHooker
 import com.qm.qqzygisk.hook.app.hooker.SettingHooker
 import com.qm.qqzygisk.hook.app.hooker.StartActivityHooker
@@ -138,6 +139,9 @@ object QQEntry {
         } catch (th: Throwable) {
             Log.error("依赖宿主资源的 hook 安装异常, 本进程不再重试", th)
         }
+        // “已撤回”标记独立安装：形状漂移/失败只跳过本 hook，允许后续 Activity 重试，也不影响其它 hook。
+        runCatching { RecalledBadgeHooker.install(activity) }
+            .onFailure { Log.warn("安装已撤回标记 hook 失败", it) }
     }
 
     /**

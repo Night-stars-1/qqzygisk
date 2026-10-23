@@ -1,6 +1,7 @@
 package com.qm.qqzygisk.hook.app.chat
 
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
+import com.qm.qqzygisk.hook.utils.Log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -22,6 +23,13 @@ internal object NtMsgAccess {
     /** QAuxiliary: io.github.qauxv.bridge.ntapi.RelationNTUinAndUidApi */
     private const val UIN_UID_API = "com.tencent.relation.common.api.IRelationNTUinAndUidApi"
     private const val KERNEL_SERVICE = "com.tencent.qqnt.kernel.api.IKernelService"
+
+    /** com.tencent.qqnt.troopmemberlist.ITroopMemberListRepoApi */
+    private const val TROOP_MEMBER_API = "com.tencent.qqnt.troopmemberlist.ITroopMemberListRepoApi"
+
+    /** `from` tag for member lookups; the host requires it to be non-empty. */
+    private const val TROOP_MEMBER_FROM = "anti_revoke_tip"
+    private const val TROOP_MEMBER_TIMEOUT_MS = 500L
 
     val kernelMsgServices =
         arrayOf(
@@ -62,6 +70,9 @@ internal object NtMsgAccess {
 
     @Volatile
     private var cachedSelfUid: String? = null
+
+    @Volatile
+    private var troopMemberWarned = false
 
     fun loadClass(name: String): Class<*>? = runCatching { Class.forName(name, false, appClassLoader) }.getOrNull()
 
@@ -200,6 +211,84 @@ internal object NtMsgAccess {
     fun uidFromUin(uin: String): String? = convertUinUid("getUidFromUin", uin)
 
     fun uinFromUid(uid: String): String? = convertUinUid("getUinFromUid", uid)
+
+    /**
+     * The name the host itself would show for [memberUin] in the group [groupUin]:
+     * remark, group card or nickname, in QQ's own priority order.
+     *
+     * Reads `ITroopMemberListRepoApi.getTroopMemberFromCache` first and falls back to
+     * one `getTroopMemberInfoSync` with a bounded timeout on a cache miss, so this must
+     * only be called off the main thread. Any reflection failure logs once and returns
+     * null; the caller then keeps the real uin instead of inventing a name.
+     */
+    fun groupMemberDisplayName(
+        groupUin: String,
+        memberUin: String,
+    ): String? {
+        if (groupUin.isEmpty() || memberUin.isEmpty()) return null
+        val apiType = loadClass(TROOP_MEMBER_API)
+        val api = apiType?.let { qRouteApi(it) }
+        if (apiType == null || api == null) {
+            warnTroopMember("$TROOP_MEMBER_API missing")
+            return null
+        }
+        val info =
+            runCatching {
+                lookupTroopMember(apiType, api, "getTroopMemberFromCache", groupUin, memberUin)
+                    ?: lookupTroopMember(apiType, api, "getTroopMemberInfoSync", groupUin, memberUin)
+            }.onFailure { warnTroopMember("troop member lookup failed group=$groupUin", it) }
+                .getOrNull() ?: return null
+        return runCatching {
+            val nickInfo = info.javaClass.getField("nickInfo").get(info) ?: return@runCatching null
+            (nickInfo.javaClass.getMethod("getShowName").invoke(nickInfo) as? String)
+                ?.trim()?.takeIf { it.isNotEmpty() }
+        }.onFailure { warnTroopMember("troop member display name failed group=$groupUin", it) }.getOrNull()
+    }
+
+    /**
+     * getTroopMemberFromCache(String troopUin, String memberUin, LifecycleOwner?, String)
+     * and getTroopMemberInfoSync with a trailing timeout. The owner is nullable and the
+     * cache variant does no IO, so both are safe on the tip worker.
+     */
+    private fun lookupTroopMember(
+        apiType: Class<*>,
+        api: Any,
+        name: String,
+        groupUin: String,
+        memberUin: String,
+    ): Any? {
+        val expected = if (name == "getTroopMemberInfoSync") 5 else 4
+        val method =
+            apiType.methods.firstOrNull { candidate ->
+                val params = candidate.parameterTypes
+                candidate.name == name &&
+                    params.size == expected &&
+                    params[0] == String::class.java &&
+                    params[1] == String::class.java &&
+                    params[3] == String::class.java &&
+                    params[2].name == "androidx.lifecycle.LifecycleOwner" &&
+                    candidate.returnType.name == "com.tencent.mobileqq.data.troop.TroopMemberInfo" &&
+                    (expected == 4 || params[4] == Long::class.javaPrimitiveType || params[4] == Long::class.javaObjectType)
+            } ?: run {
+                warnTroopMember("$name troop member signature missing")
+                return null
+            }
+        method.isAccessible = true
+        return if (expected == 4) {
+            method.invoke(api, groupUin, memberUin, null, TROOP_MEMBER_FROM)
+        } else {
+            method.invoke(api, groupUin, memberUin, null, TROOP_MEMBER_FROM, TROOP_MEMBER_TIMEOUT_MS)
+        }
+    }
+
+    private fun warnTroopMember(
+        message: String,
+        error: Throwable? = null,
+    ) {
+        if (troopMemberWarned) return
+        troopMemberWarned = true
+        Log.warn(message, error)
+    }
 
     private fun convertUinUid(
         name: String,

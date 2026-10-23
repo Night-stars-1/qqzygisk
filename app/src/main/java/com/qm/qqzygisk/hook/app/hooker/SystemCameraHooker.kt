@@ -14,13 +14,11 @@ import androidx.exifinterface.media.ExifInterface
 import com.highcapable.kavaref.KavaRef.Companion.resolve
 import com.qm.qqzygisk.hook.app.base.BaseHooker
 import com.qm.qqzygisk.hook.app.base.IStartActivityHookDecorator
-import com.qm.qqzygisk.hook.app.data.HostData.toAppClass
 import com.qm.qqzygisk.hook.extension.MethodCall
 import com.qm.qqzygisk.hook.extension.hook
 import com.qm.qqzygisk.hook.utils.HookSettings
 import com.qm.qqzygisk.hook.utils.Log
 import java.io.File
-import java.lang.reflect.Constructor
 import java.lang.reflect.Method
 import java.util.Collections
 import java.util.WeakHashMap
@@ -34,22 +32,16 @@ object SystemCameraHooker : BaseHooker() {
     private const val CAMERA_ACTIVITY =
         "com.tencent.aelight.camera.aebase.QIMCameraCaptureActivity"
 
-    // QQ 当前版本里的混淆短名，来自能用的 classes.dex，不是模块自己的变量名。
-    private const val EDITOR_ENTRANCE_CLASS = "ad.a"
-    private const val EDITOR_ENTRANCE_BUILDER_CLASS = "ad.b\$a"
-    private const val EDITOR_JUMP_CLASS = "xc.a"
-    private const val PHOTO_CAPTURE_RESULT_CLASS =
-        "com.tencent.aelight.camera.struct.camera.AEPhotoCaptureResult"
+    // QQ 编辑器固定以自己的请求码回传结果，模块只负责转发。
+    private const val EDITOR_REQUEST_CODE = 1012
 
     private const val AECAMERA_MODE = "AECAMERA_MODE"
     private const val PHOTO_MODE = 200
     private const val REQUEST_CODE = 0x515A
-    private const val EDITOR_REQUEST_CODE = 1012
 
     private const val DEFAULT_EDIT_VIDEO_TYPE = 10002
     private const val DEFAULT_TAKE_PHOTO_BUSINESS = 14
     private const val DEFAULT_CAMERA_PREFER_ID = 2
-    private const val ENTRANCE_SECOND_ARG = 120
     private const val KEY_EDIT_VIDEO_TYPE = "edit_video_type"
     private const val KEY_TAKE_PHOTO_BUSINESS = "take_photo_business"
     private const val KEY_CAMERA_PREFER_ID = "key_camera_prefer_id"
@@ -62,12 +54,10 @@ object SystemCameraHooker : BaseHooker() {
 
     private const val CACHE_DIR = "qqzygisk/system-camera"
     private const val CACHE_MAX_AGE_MS = 24L * 60L * 60L * 1000L
-    // QQ declares .fileprovider twice (support + AndroidX). The external alias
-    // resolves unambiguously to the AndroidX provider used by current QQ.
-    private const val FILE_PROVIDER_SUFFIX = ".external.fileprovider"
-
-    @Volatile
-    private var editorApi: EditorApi? = null
+    // QQ 的 AndroidManifest 里通用 `.fileprovider` 的两个声明（support 与 AndroidX）
+    // 都覆盖模块缓存目录（root-path / external-files-path / cache-path），
+    // 不再使用只导出 wxa 临时目录的 `.external.fileprovider`。
+    private const val FILE_PROVIDER_SUFFIX = ".fileprovider"
 
     private val bypassSessions = Collections.synchronizedMap(
         WeakHashMap<Activity, BypassSession>(),
@@ -79,19 +69,12 @@ object SystemCameraHooker : BaseHooker() {
         EDITOR,
     }
 
-    private data class EditorApi(
-        val entranceClass: Class<*>,
-        val entranceBuilderClass: Class<*>,
-        val photoResultConstructor: Constructor<*>,
-        val jumpToEditorMethod: Method,
-    )
-
     private data class BypassSession(
         val launchIntent: Intent,
         val callerRequestCode: Int,
         val outputFile: File,
         val outputUri: Uri?,
-        val editorApi: EditorApi,
+        val editorApi: QQCameraEditorApi.Contract,
         var phase: BypassPhase = BypassPhase.CAMERA,
     )
 
@@ -106,107 +89,6 @@ object SystemCameraHooker : BaseHooker() {
     }
 
     override fun initOnce() = Unit
-
-    @Synchronized
-    private fun requireEditorApi(): EditorApi {
-        editorApi?.let { return it }
-
-        val entranceClass = EDITOR_ENTRANCE_CLASS.toAppClass()
-        val entranceBuilderClass = EDITOR_ENTRANCE_BUILDER_CLASS.toAppClass()
-        val photoResultClass = PHOTO_CAPTURE_RESULT_CLASS.toAppClass()
-        val intClass = Int::class.javaPrimitiveType!!
-        val photoResultConstructor = photoResultClass.getDeclaredConstructor(
-            intClass,
-            intClass,
-            String::class.java,
-            Bitmap::class.java,
-            Long::class.javaPrimitiveType!!,
-            intClass,
-        ).apply { isAccessible = true }
-
-        val jumpToEditorMethod = EDITOR_JUMP_CLASS.toAppClass().declaredMethods.firstOrNull { method ->
-            method.name == "c" &&
-                method.parameterTypes.size == 5 &&
-                method.parameterTypes[0] == Activity::class.java &&
-                method.parameterTypes[1] == photoResultClass &&
-                method.parameterTypes[2] == entranceClass
-        }?.apply { isAccessible = true }
-            ?: error("$EDITOR_JUMP_CLASS.c(Activity, AEPhotoCaptureResult, entrance, ...) was not found")
-
-        return EditorApi(
-            entranceClass = entranceClass,
-            entranceBuilderClass = entranceBuilderClass,
-            photoResultConstructor = photoResultConstructor,
-            jumpToEditorMethod = jumpToEditorMethod,
-        ).also {
-            editorApi = it
-            Log.info(
-                "QQ image editor API resolved: result=${photoResultClass.name}, " +
-                    "entrance=${entranceClass.name}, builder=${entranceBuilderClass.name}, " +
-                    "jump=${jumpToEditorMethod.toGenericString()}",
-            )
-        }
-    }
-
-    private fun buildPhotoResult(api: EditorApi, file: File): Any {
-        return api.photoResultConstructor.newInstance(
-            0,
-            0,
-            file.absolutePath,
-            null,
-            System.currentTimeMillis(),
-            readOrientation(file),
-        )
-    }
-
-    private fun buildEntrance(api: EditorApi, activity: Activity, launchIntent: Intent): Any {
-        val editVideoType = launchIntent.getIntExtra(KEY_EDIT_VIDEO_TYPE, DEFAULT_EDIT_VIDEO_TYPE)
-        val takePhotoBusiness = launchIntent.getIntExtra(
-            KEY_TAKE_PHOTO_BUSINESS,
-            DEFAULT_TAKE_PHOTO_BUSINESS,
-        )
-        val preferId = launchIntent.getIntExtra(KEY_CAMERA_PREFER_ID, DEFAULT_CAMERA_PREFER_ID)
-        val aioClass = launchIntent.getStringExtra(KEY_AIO_CLASS)
-            ?.takeIf { it.isNotEmpty() }
-            ?: activity.javaClass.name
-        @Suppress("DEPRECATION")
-        val sessionInfo = launchIntent.getParcelableExtra<Parcelable>(KEY_SESSION_INFO)
-
-        val entrance = api.entranceClass.getDeclaredConstructor(
-            Int::class.javaPrimitiveType!!,
-            Int::class.javaPrimitiveType!!,
-            Int::class.javaPrimitiveType!!,
-        ).apply { isAccessible = true }
-            .newInstance(editVideoType, ENTRANCE_SECOND_ARG, takePhotoBusiness)
-
-        val builder = api.entranceBuilderClass.getDeclaredConstructor(
-            Int::class.javaPrimitiveType!!,
-        ).apply { isAccessible = true }
-            .newInstance(preferId)
-
-        invokeOneArg(builder, "j", sessionInfo)
-        invokeOneArg(builder, "h", aioClass)
-        invokeOneArg(builder, "i", 1)
-        invokeOneArg(builder, "k", launchIntent.getIntExtra(KEY_QQ_SUB_BUSINESS_ID, 0))
-        invokeOneArg(entrance, "c", invokeNoArg(builder, "g"))
-        return entrance
-    }
-
-    private fun invokeNoArg(target: Any, name: String): Any? {
-        val method = target.javaClass.declaredMethods.firstOrNull { candidate ->
-            candidate.name == name && candidate.parameterTypes.isEmpty()
-        } ?: error("${target.javaClass.name}.$name() was not found")
-        method.isAccessible = true
-        return method.invoke(target)
-    }
-
-    private fun invokeOneArg(target: Any, name: String, value: Any?) {
-        val method = target.javaClass.declaredMethods.firstOrNull { candidate ->
-            candidate.name == name && candidate.parameterTypes.size == 1
-        } ?: error("${target.javaClass.name}.$name(...) was not found")
-        method.isAccessible = true
-        method.invoke(target, value)
-    }
 
     private fun bypassQimCameraLaunch(intent: Intent, method: MethodCall): Boolean {
         val caller = runCatching { method.instance as? Activity }.getOrNull() ?: return false
@@ -236,7 +118,8 @@ object SystemCameraHooker : BaseHooker() {
         }
 
         return runCatching {
-            val editorApi = requireEditorApi()
+            // 先在启动系统相机前解析完整契约：解析失败就明确提示，不进入拍照流程。
+            val editorApi = QQCameraEditorApi.resolve()
             hookActivityResult(caller)
             pruneCache(caller)
             val outputFile = newOutputFile(caller)
@@ -382,18 +265,35 @@ object SystemCameraHooker : BaseHooker() {
                 )
             }
 
-            val photoResult = buildPhotoResult(session.editorApi, session.outputFile)
-            val entrance = buildEntrance(session.editorApi, activity, session.launchIntent)
+            val photoResult = session.editorApi.buildPhotoResult(
+                session.outputFile.absolutePath,
+                readOrientation(session.outputFile),
+            )
+            @Suppress("DEPRECATION")
+            val sessionInfo =
+                session.launchIntent.getParcelableExtra<Parcelable>(KEY_SESSION_INFO)
+            val entrance = session.editorApi.buildEntrance(
+                editVideoType = session.launchIntent.getIntExtra(
+                    KEY_EDIT_VIDEO_TYPE,
+                    DEFAULT_EDIT_VIDEO_TYPE,
+                ),
+                takePhotoBusiness = session.launchIntent.getIntExtra(
+                    KEY_TAKE_PHOTO_BUSINESS,
+                    DEFAULT_TAKE_PHOTO_BUSINESS,
+                ),
+                preferId = session.launchIntent.getIntExtra(
+                    KEY_CAMERA_PREFER_ID,
+                    DEFAULT_CAMERA_PREFER_ID,
+                ),
+                aioClassName = session.launchIntent.getStringExtra(KEY_AIO_CLASS)
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: activity.javaClass.name,
+                sessionInfo = sessionInfo,
+                qqSubBusinessId = session.launchIntent.getIntExtra(KEY_QQ_SUB_BUSINESS_ID, 0),
+            )
             session.phase = BypassPhase.EDITOR
             Log.info("Opening QQ image editor without QIM activity: ${session.outputFile}")
-            session.editorApi.jumpToEditorMethod.invoke(
-                null,
-                activity,
-                photoResult,
-                entrance,
-                null,
-                0,
-            )
+            session.editorApi.jumpToEditor(activity, photoResult, entrance)
             true
         }.onFailure {
             bypassSessions.remove(activity)
