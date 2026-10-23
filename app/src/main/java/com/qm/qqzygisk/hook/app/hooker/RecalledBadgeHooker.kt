@@ -7,21 +7,30 @@ import com.qm.qqzygisk.hook.app.chat.NtMsgAccess
 import com.qm.qqzygisk.hook.app.chat.RecalledBadge
 import com.qm.qqzygisk.hook.app.chat.RecalledMessageKey
 import com.qm.qqzygisk.hook.app.chat.RecalledMessages
+import com.qm.qqzygisk.hook.app.chat.RecalledRecordReader
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.extension.hook
 import com.qm.qqzygisk.hook.utils.HookSettings
 import com.qm.qqzygisk.hook.utils.Log
+import java.lang.ref.WeakReference
 import java.lang.reflect.Method
+import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 在宿主 AIO 消息行上安装“已撤回”标记。
+ * 在宿主 AIO 消息行的原消息气泡外圈绘制“已撤回”红色边框。
  *
  * 入口是 `AIOBubbleMsgItemVB.handleUIState(MviUIState)`：宿主每次把模型绑定到行、以及行
- * 滚进/滚出可见区都会经过它。before 先撤掉上一次的装饰并恢复气泡原约束，after 重新读取
- * 当前模型再绑定，保证行被复用到另一条消息时不会带着上一条消息的标记。只有真正的绑定状态
+ * 滚进/滚出可见区都会经过它。before 先撤掉上一次的红框，after 重新读取当前模型再决定是否加框，
+ * 保证行被复用到另一条消息时不会带着上一条消息的边框。只有真正的绑定状态
  * （`AIOMsgItemUIState$AIOMsgItemState`）才做 clear/rebind；ScrollIntoScreen / ScrollOutScreen
- * 等纯滚动状态不改 View，直接跳过，避免滚动时反复 detach/clone LP/重排。
+ * 等纯滚动状态不改 View，直接跳过，避免滚动时反复无效写入。
+ *
+ * 行身份由 [RecalledRecordReader] 从 `MsgRecord` 读取：`GrayTipsMsgItem`（含子类）以及元素列表
+ * 为空、含灰条或未知元素类型的记录一律得到 null，renderer 收到 null 即清除该行旧边框。
+ * 灰条不能靠“这一行有没有气泡”来排除：撤回提示本身也可能带可复用的气泡结构。
+ * 撤回通知刷新时从“行 → 弱引用绑定器”现场重读当前记录，不沿用此前绑定的消息身份，
+ * 因此行被复用成灰条后，迟到的通知同样只会清框，不会照着旧 key 误加边框。
  *
  * 所有宿主符号都按“契约形状”定位，不写死混淆名：
  *  - handleUIState：精确名 + 单参数为 `com.tencent.mvi.base.mvi.MviUIState`、返回 void；
@@ -33,13 +42,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal object RecalledBadgeHooker {
     private const val VB_CLASS = "com.tencent.mobileqq.aio.msglist.holder.AIOBubbleMsgItemVB"
     private const val MSG_ITEM_CLASS = "com.tencent.mobileqq.aio.msg.AIOMsgItem"
+
+    /** 独立撤回提示等灰条的消息项类型；模型 getter 仍按 `AIOMsgItem` 形状返回，这里是运行期显式拒绝。 */
+    private const val GRAY_TIP_ITEM_CLASS = "com.tencent.mobileqq.aio.msg.GrayTipsMsgItem"
     private const val MVI_STATE_CLASS = "com.tencent.mvi.base.mvi.MviUIState"
     private const val BUBBLE_CLASS = "com.tencent.qqnt.aio.holder.template.BubbleLayoutCompatPress"
     private const val BUBBLE_SIMPLE_NAME = "BubbleLayoutCompatPress"
 
     /**
      * 真正的“把模型绑定到行”的状态。handleUIState 同时接收 ScrollIntoScreen / ScrollOutScreen
-     * 等纯滚动状态，那些状态不重建 View，没必要 detach/clone LP/重排。
+     * 等纯滚动状态不重建 View，无需反复清框和重新绑定。
      */
     private const val MSG_ITEM_STATE_CLASS =
         "com.tencent.mobileqq.aio.msglist.holder.AIOMsgItemUIState\$AIOMsgItemState"
@@ -60,6 +72,9 @@ internal object RecalledBadgeHooker {
     /** 绑定状态类缺失（版本漂移）只提示一次，随后退化为对所有状态生效。 */
     private val bindStateMissingLogged = AtomicBoolean(false)
 
+    /** 灰条消息项类缺失同样只提示一次；元素类型检查仍然生效。 */
+    private val grayItemMissingLogged = AtomicBoolean(false)
+
     @Volatile
     private var installed = false
 
@@ -72,18 +87,23 @@ internal object RecalledBadgeHooker {
     @Volatile
     private var recordGetter: Method? = null
 
+    /** 记录身份读取器；形状缺失时不安装，避免用不完整的身份误加边框。 */
     @Volatile
-    private var chatTypeGetter: Method? = null
+    private var reader: RecalledRecordReader? = null
 
+    /** `GrayTipsMsgItem` 类型，用于在读取记录前显式排除灰条行。 */
     @Volatile
-    private var peerGetter: Method? = null
-
-    @Volatile
-    private var seqGetter: Method? = null
+    private var grayItemType: Class<*>? = null
 
     /** 只有该状态类实例才执行 clear/rebind；为 null 表示宿主没有该类，退化为全部状态。 */
     @Volatile
     private var bindStateType: Class<*>? = null
+
+    /**
+     * 行 → 当前绑定器（两者都弱引用）：宿主复用消息行后，刷新通知要按绑定器现场重读记录，
+     * 而不是沿用 Renderer 里缓存的身份。只在主线程读写（bind 与 refresh 都在主线程）。
+     */
+    private val rowBinders = WeakHashMap<View, WeakReference<Any>>()
 
     /**
      * 初始化标记存储并安装 hook。
@@ -97,7 +117,7 @@ internal object RecalledBadgeHooker {
         synchronized(lock) {
             if (installed) return true
             val ok = runCatching { installHook() }.getOrElse { error ->
-                drift("安装已撤回标记 hook 失败", error)
+                drift("安装已撤回边框 hook 失败", error)
                 false
             }
             installed = ok
@@ -113,9 +133,10 @@ internal object RecalledBadgeHooker {
         runCatching {
             // 先挂 listener 再触发载入：首次载入完成的通知不会因为注册晚一步而丢掉。
             RecalledMessages.addListener {
-                // 通知到达时现场读账号：切换账号后，旧账号的标记不能刷到新账号的会话行上。
+                // 通知到达时现场读账号：切换账号后，旧账号的记录不能把红框刷到新账号的会话行上。
                 val account = runCatching { NtMsgAccess.selfUin() }.getOrDefault("")
                 RecalledBadge.refresh(
+                    identityOf = { row -> binderOf(row)?.let { messageBinder -> keyOf(messageBinder, account) } },
                     recalled = { key ->
                         account.isNotEmpty() &&
                             key.accountUin == account &&
@@ -135,34 +156,35 @@ internal object RecalledBadgeHooker {
         val msg = msgGetterOf(vbType) ?: return false
         val root = rootGetterOf(vbType) ?: return false
         val record = recordGetterOf(msg.returnType) ?: return false
-        val chatType = recordGetterOf(record.returnType, "getChatType", Int::class.javaPrimitiveType!!) ?: return false
-        val peer = recordGetterOf(record.returnType, "getPeerUid", String::class.java) ?: return false
-        val seq = recordGetterOf(record.returnType, "getMsgSeq", Long::class.javaPrimitiveType!!) ?: return false
+        val recordReader = RecalledRecordReader(record.returnType)
+        recordReader.unavailable?.let {
+            drift("$RECORD_GETTER 返回的记录缺少 $it")
+            return false
+        }
         msgGetter = msg
         rootGetter = root
         recordGetter = record
-        chatTypeGetter = chatType
-        peerGetter = peer
-        seqGetter = seq
+        reader = recordReader
+        grayItemType = grayItemTypeOf()
         bindStateType = bindStateTypeOf()
         uiState.hook {
             before {
                 runCatching {
-                    // 只有真正的绑定状态才重建装饰；纯滚动状态保持现状，不做多余的布局写入。
+                    // 只有真正的绑定状态才动边框；纯滚动状态保持现状，不做多余的 View 写入。
                     if (!isBindState(args.firstOrNull())) return@runCatching
-                    // 先撤掉旧装饰并恢复气泡原约束：这一行马上要显示新模型。
+                    // 先撤掉旧红框：这一行马上要显示新模型，边框不能跟着行复用到下一条消息。
                     val row = rootGetter?.invoke(instance) as? View ?: return@runCatching
                     RecalledBadge.clear(row)
-                }.onFailure { reportFailure("清除已撤回标记失败", it) }
+                }.onFailure { reportFailure("清除已撤回边框失败", it) }
             }
             after {
                 runCatching {
                     if (!isBindState(args.firstOrNull())) return@runCatching
                     bind(instance)
-                }.onFailure { reportFailure("绑定已撤回标记失败", it) }
+                }.onFailure { reportFailure("绑定已撤回边框失败", it) }
             }
         }
-        Log.info("已撤回标记 hook 安装完成")
+        Log.info("已撤回边框 hook 安装完成")
         return true
     }
 
@@ -170,7 +192,7 @@ internal object RecalledBadgeHooker {
         runCatching { Class.forName(MSG_ITEM_STATE_CLASS, false, appClassLoader) }.getOrNull()
             ?: run {
                 if (bindStateMissingLogged.compareAndSet(false, true)) {
-                    Log.warn("未找到 $MSG_ITEM_STATE_CLASS，已撤回标记对所有 handleUIState 状态生效")
+                    Log.warn("未找到 $MSG_ITEM_STATE_CLASS，已撤回边框对所有 handleUIState 状态生效")
                 }
                 null
             }
@@ -182,43 +204,59 @@ internal object RecalledBadgeHooker {
         return type.isInstance(state) || state.javaClass.name == MSG_ITEM_STATE_CLASS
     }
 
-    /** after：重新读当前模型，按现场账号与会话身份判断这行要不要标。 */
+    /** after：重新读当前模型，先排除灰条/空记录，再按现场账号与会话身份判断这行要不要加框。 */
     private fun bind(binder: Any) {
         val row = rootGetter?.invoke(binder) as? View ?: return
+        rememberBinder(row, binder)
         val bubble = bubbleOf(row)
-        val key = keyOf(binder)
+        val account = NtMsgAccess.selfUin()
+        val key = keyOf(binder, account)
         val recalled = key != null && enabled() && RecalledMessages.contains(key)
+        // key 为 null 的灰条/系统行也调用渲染器，让它在行复用时清掉上一条消息留下的红框。
         RecalledBadge.bind(row, bubble, key, recalled)
     }
 
-    private fun keyOf(binder: Any): RecalledMessageKey? {
-        val message = msgGetter?.invoke(binder) ?: return null
-        val record = recordGetter?.invoke(message) ?: return null
-        val chatType = chatTypeGetter?.let { invokeInt(it, record) } ?: return null
-        val peerUid = peerGetter?.let { invokeString(it, record) } ?: return null
-        val msgSeq = seqGetter?.let { invokeLong(it, record) } ?: return null
-        if (peerUid.isEmpty() || msgSeq <= 0L) return null
-        if (chatType != NtMsgAccess.CHAT_TYPE_C2C && chatType != NtMsgAccess.CHAT_TYPE_GROUP) return null
-        // 账号每次现场读，避免同一进程切换账号后沿用旧 uin 造出错误的 key。
-        val account = NtMsgAccess.selfUin()
-        if (account.isEmpty()) return null
-        return RecalledMessageKey(account, chatType, peerUid, msgSeq)
+    /** 记录行当前对应的绑定器；宿主复用同一条目时绑定器通常不变，不重复分配弱引用。 */
+    private fun rememberBinder(
+        row: View,
+        binder: Any,
+    ) {
+        if (binderOf(row) === binder) return
+        rowBinders[row] = WeakReference(binder)
     }
 
-    private fun invokeInt(
-        method: Method,
-        target: Any,
-    ): Int? = runCatching { method.invoke(target) as? Int }.getOrNull()
+    private fun binderOf(row: View): Any? = rowBinders[row]?.get()
 
-    private fun invokeLong(
-        method: Method,
-        target: Any,
-    ): Long? = runCatching { method.invoke(target) as? Long }.getOrNull()
+    /**
+     * [account] 由调用方现场读取一次后传入：bind 用当前账号，刷新用通知到达时捕获的账号，
+     * 两条路径都不会在循环里重复查账号。
+     */
+    private fun keyOf(
+        binder: Any,
+        account: String,
+    ): RecalledMessageKey? {
+        if (account.isEmpty()) return null
+        val message = msgGetter?.invoke(binder) ?: return null
+        // 先按消息项类型拒绝灰条，避免记录身份字段与已撤回消息同 key 时被当成原消息。
+        if (isGrayTipItem(message)) return null
+        val record = recordGetter?.invoke(message) ?: return null
+        return reader?.keyOf(record, account)
+    }
 
-    private fun invokeString(
-        method: Method,
-        target: Any,
-    ): String? = runCatching { method.invoke(target) as? String }.getOrNull()
+    /**
+     * 灰条消息项按类型拒绝，包含子类；类若来自另一份 ClassLoader，isInstance 会失配，
+     * 因此再按继承链上的类名复核一次。
+     */
+    private fun isGrayTipItem(message: Any): Boolean {
+        val declared = grayItemType
+        if (declared != null && declared.isInstance(message)) return true
+        var type: Class<*>? = message.javaClass
+        while (type != null) {
+            if (type.name == GRAY_TIP_ITEM_CLASS) return true
+            type = type.superclass
+        }
+        return false
+    }
 
     private fun enabled(): Boolean = HookSettings.isEnabled(AntiRevokeHooker.key, AntiRevokeHooker.defaultEnabled)
 
@@ -276,24 +314,18 @@ internal object RecalledBadgeHooker {
         return method.apply { isAccessible = true }
     }
 
-    private fun recordGetterOf(
-        type: Class<*>,
-        name: String,
-        returnType: Class<*>,
-    ): Method? {
-        val method =
-            runCatching { type.getMethod(name) }.getOrNull()
-                ?.takeIf { it.parameterCount == 0 && it.returnType == returnType }
-        if (method == null) {
-            drift("${type.name}.$name() 不再是 ${returnType.name}")
-            return null
+    private fun grayItemTypeOf(): Class<*>? =
+        runCatching { Class.forName(GRAY_TIP_ITEM_CLASS, false, appClassLoader) }.getOrElse {
+            if (grayItemMissingLogged.compareAndSet(false, true)) {
+                Log.warn("未找到 $GRAY_TIP_ITEM_CLASS，灰条仅按消息元素类型排除")
+            }
+            null
         }
-        return method.apply { isAccessible = true }
-    }
 
     /**
-     * 气泡是 root 的直接子项（`BubbleLayoutCompatPress`，Vertical LinearLayout）。
-     * 保留一层兜底深度，模板偶尔多包一层时标记仍然可用；灰条等没有气泡的行返回 null。
+     * 气泡是 root 的直接子项（`BubbleLayoutCompatPress`，Vertical LinearLayout），也是红色边框的锚点。
+     * 保留一层兜底深度，模板偶尔多包一层时边框仍然可用。
+     * 这里只负责找锚点，不参与“是不是原消息”的判断：灰条结构上也可能带气泡。
      */
     private fun bubbleOf(root: View): View? {
         val group = root as? ViewGroup ?: return null
@@ -335,7 +367,7 @@ internal object RecalledBadgeHooker {
         error: Throwable? = null,
     ) {
         if (driftLogged.compareAndSet(false, true)) {
-            Log.warn("已撤回标记 hook 跳过: $message", error)
+            Log.warn("已撤回边框 hook 跳过: $message", error)
         }
     }
 }
