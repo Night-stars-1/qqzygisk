@@ -13,6 +13,7 @@ import com.qm.qqzygisk.hook.app.hooker.EmoticonButtonHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonPanelHooker
 import com.qm.qqzygisk.hook.app.hooker.EmotionToPicHooker
 import com.qm.qqzygisk.hook.app.hooker.MsgFontHooker
+import com.qm.qqzygisk.hook.app.hooker.QQPatchBlockHooker
 import com.qm.qqzygisk.hook.app.hooker.RepeaterHooker
 import com.qm.qqzygisk.hook.app.hooker.SettingHooker
 import com.qm.qqzygisk.hook.app.hooker.StartActivityHooker
@@ -57,6 +58,8 @@ object QQEntry {
         settings.clear()
         hostPackageName = packageName
         HostData.init(loader)
+        // 热补丁入口先于其它宿主 hook 安装，不能被 UI/业务类解析失败挡住。
+        QQPatchBlockHooker.load()
         HostRuntime.install(QQHostBridge)
         Log.info("running on: ${HostData.toVerStr()}")
         runCatching { NtImageRkeyProvider.installHook() }
@@ -87,6 +90,8 @@ object QQEntry {
         }
         val hooks =
             listOf(
+                // 此项已在宿主 ClassLoader 就绪时安装；这里只注册设置。
+                QQPatchBlockHooker,
                 ChatMenuHooker,
                 RepeaterHooker,
                 EmoticonButtonHooker,
@@ -103,7 +108,7 @@ object QQEntry {
                 settings.add(hooker.toSettingData())
                 settings.addAll(hooker.extraSettings)
             }
-            if (hooker !in hostUiHookers) hooker.load()
+            if (hooker !== QQPatchBlockHooker && hooker !in hostUiHookers) hooker.load()
         }
         StartActivityHooker.decorators.forEach { hooker ->
             if (hooker.isShow) {
