@@ -8,6 +8,7 @@ import com.qm.qqzygisk.hook.app.data.HostData
 import com.qm.qqzygisk.hook.app.data.HostData.toAppClass
 import com.qm.qqzygisk.hook.app.chat.NtImageRkeyProvider
 import com.qm.qqzygisk.hook.app.hooker.AntiRevokeHooker
+import com.qm.qqzygisk.hook.app.hooker.BiliMiniAppWebCardHooker
 import com.qm.qqzygisk.hook.app.hooker.ChatMenuHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonButtonHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonPanelHooker
@@ -95,6 +96,7 @@ object QQEntry {
                 QQPatchBlockHooker,
                 ChatMenuHooker,
                 RepeaterHooker,
+                BiliMiniAppWebCardHooker,
                 EmoticonButtonHooker,
                 EmoticonPanelHooker,
                 EmotionToPicHooker,
@@ -109,7 +111,7 @@ object QQEntry {
                 settings.add(hooker.toSettingData())
                 settings.addAll(hooker.extraSettings)
             }
-            if (hooker !== QQPatchBlockHooker && hooker !in hostUiHookers) hooker.load()
+            if (hooker !== QQPatchBlockHooker && hooker !== BiliMiniAppWebCardHooker && hooker !in hostUiHookers) hooker.load()
         }
         StartActivityHooker.decorators.forEach { hooker ->
             if (hooker.isShow) {
@@ -142,6 +144,8 @@ object QQEntry {
         // “已撤回”标记独立安装：形状漂移/失败只跳过本 hook，允许后续 Activity 重试，也不影响其它 hook。
         runCatching { RecalledBadgeHooker.install(activity) }
             .onFailure { Log.warn("安装已撤回标记 hook 失败", it) }
+        // 展示转换独立安装，协议漂移不能令菜单/设置等宿主 UI hook 进入失败终态。
+        BiliMiniAppWebCardHooker.load()
     }
 
     /**

@@ -36,8 +36,8 @@ android {
         minSdk = 28
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 24
-        versionName = "1.23"
+        versionCode = 25
+        versionName = "1.24"
         ndk.abiFilters.addAll(arrayOf("armeabi-v7a", "arm64-v8a"))
     }
 
@@ -312,6 +312,8 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.material3)
+    implementation(libs.markwon.core)
+    implementation(libs.markwon.tables)
     implementation(libs.androidx.compose.ui.tooling.preview)
 
     compileOnly(libs.xposed.api)

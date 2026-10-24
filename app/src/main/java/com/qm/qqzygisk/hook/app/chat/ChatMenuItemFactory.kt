@@ -24,11 +24,17 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * QQ 长按菜单项是抽象基类，不能直接 new，也不能在模块 APK 里写死继承
  * （基类名和抽象方法名会随 QQ 版本变化）。这里按当前进程里扫到的
- * [baseClass] 动态写一份 DEX：覆盖标题、图标、id、点击，点击时执行传入的
- * [Runnable]。
+ * [baseClass] 动态写一份 DEX：只覆盖主标题和标识这两个抽象 String 方法，
+ * 外加图标、id、点击；点击时执行传入的 [Runnable]。
+ *
+ * 基类里的具体 String 方法（副标题、无障碍文案、[Any.toString] 等）一律
+ * 继承宿主实现，避免用同一个值冒充多个语义，也避免实例之间互相污染。
  */
 internal object ChatMenuItemFactory {
     private const val GENERATED_CLASS_PREFIX = "com.qm.qqzygisk.generated.ChatMenuItem_"
+
+    /** 生成菜单项标识的独立命名空间，避免和宿主内部 processor key 混用。 */
+    private const val IDENTIFIER_PREFIX = "com.qm.qqzygisk.menu."
 
     /** 每个 QQ 菜单基类只生成一次，后续 [create] 复用同一个构造器。 */
     private val constructors = ConcurrentHashMap<Class<*>, Constructor<*>>()
@@ -40,8 +46,10 @@ internal object ChatMenuItemFactory {
     /**
      * @param baseClass QQ 当前版本的菜单项抽象基类
      * @param message 当前长按的 AIOMsgItem
-     * @param stringMethods 现有菜单项上返回非空文案的方法，覆盖成 [title]
-     * @param emptyStringMethods 其它必须覆盖的 String 方法，返回空串
+     * @param title 主标题文案，由 [titleMethod] 返回
+     * @param titleMethod 基类中返回主标题的抽象 String 方法
+     * @param identifierMethod 基类中返回菜单项标识的抽象 String 方法。
+     *   生成类返回 `com.qm.qqzygisk.menu.<id>`，与 [id] 一一对应且稳定
      * @param iconMethod 返回图标 resId 的方法；没有图标时为 null
      * @param idMethod 返回菜单项 id 的方法
      * @param clickMethod 抽象点击方法，覆盖后转调 [callback]
@@ -52,8 +60,8 @@ internal object ChatMenuItemFactory {
         title: String,
         icon: Int,
         id: Int,
-        stringMethods: List<Method>,
-        emptyStringMethods: List<Method>,
+        titleMethod: Method,
+        identifierMethod: Method,
         iconMethod: Method?,
         idMethod: Method,
         clickMethod: Method,
@@ -62,20 +70,21 @@ internal object ChatMenuItemFactory {
         val constructor = constructors[baseClass] ?: synchronized(this) {
             constructors[baseClass] ?: buildConstructor(
                 baseClass,
-                stringMethods,
-                emptyStringMethods,
+                titleMethod,
+                identifierMethod,
                 iconMethod,
                 idMethod,
                 clickMethod,
             ).also { constructors[baseClass] = it }
         }
-        return constructor.newInstance(message, title, icon, id, callback)
+        val identifier = "$IDENTIFIER_PREFIX$id"
+        return constructor.newInstance(message, title, identifier, icon, id, callback)
     }
 
     private fun buildConstructor(
         baseClass: Class<*>,
-        stringMethods: List<Method>,
-        emptyStringMethods: List<Method>,
+        titleMethod: Method,
+        identifierMethod: Method,
         iconMethod: Method?,
         idMethod: Method,
         clickMethod: Method,
@@ -94,12 +103,14 @@ internal object ChatMenuItemFactory {
         val generatedType = TypeId.ofName(generatedName)
 
         val titleField = FieldId.of(generatedType, "title", stringType)
+        val identifierField = FieldId.of(generatedType, "identifier", stringType)
         val iconField = FieldId.of(generatedType, "icon", TypeId.I)
         val idField = FieldId.of(generatedType, "id", TypeId.I)
         val callbackField = FieldId.of(generatedType, "callback", runnableType)
         val generatedConstructor = MethodId.constructor(
             generatedType,
             messageType,
+            stringType,
             stringType,
             TypeId.I,
             TypeId.I,
@@ -119,6 +130,9 @@ internal object ChatMenuItemFactory {
                     fieldBuilder.of(titleField).withFlags(ACC_PRIVATE or ACC_FINAL)
                 }
                 .withField { fieldBuilder ->
+                    fieldBuilder.of(identifierField).withFlags(ACC_PRIVATE or ACC_FINAL)
+                }
+                .withField { fieldBuilder ->
                     fieldBuilder.of(iconField).withFlags(ACC_PRIVATE or ACC_FINAL)
                 }
                 .withField { fieldBuilder ->
@@ -132,7 +146,7 @@ internal object ChatMenuItemFactory {
                         .of(generatedConstructor)
                         .withFlags(ACC_PUBLIC or ACC_CONSTRUCTOR)
                         .withCode(0) { code ->
-                            // <init>(message, title, icon, id, callback)
+                            // <init>(message, title, identifier, icon, id, callback)
                             code
                                 .invoke(
                                     DIRECT,
@@ -141,19 +155,20 @@ internal object ChatMenuItemFactory {
                                     code.p(0),
                                 )
                                 .iput(code.p(1), code.this_(), titleField)
-                                .iput(code.p(2), code.this_(), iconField)
-                                .iput(code.p(3), code.this_(), idField)
-                                .iput(code.p(4), code.this_(), callbackField)
+                                .iput(code.p(2), code.this_(), identifierField)
+                                .iput(code.p(3), code.this_(), iconField)
+                                .iput(code.p(4), code.this_(), idField)
+                                .iput(code.p(5), code.this_(), callbackField)
                                 .return_void()
                         }
                 }
 
-            stringMethods.forEach { method ->
-                classBuilder.addStringGetter(generatedType, method.name, titleField)
-            }
-            emptyStringMethods.forEach { method ->
-                classBuilder.addEmptyStringGetter(generatedType, method.name)
-            }
+            classBuilder.addStringGetter(generatedType, titleMethod.name, titleField)
+            classBuilder.addStringGetter(
+                generatedType,
+                identifierMethod.name,
+                identifierField,
+            )
 
             iconMethod?.let { method ->
                 classBuilder.addIntGetter(generatedType, method.name, iconField)
@@ -189,6 +204,7 @@ internal object ChatMenuItemFactory {
         return generatedClass.getDeclaredConstructor(
             superConstructor.parameterTypes[0],
             String::class.java,
+            String::class.java,
             Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType,
             Runnable::class.java,
@@ -212,27 +228,6 @@ internal object ChatMenuItemFactory {
                 .withCode(1) { code ->
                     code
                         .iget(code.l(0), code.this_(), field)
-                        .return_object(code.l(0))
-                }
-        }
-    }
-
-    private fun ClassBuilder.addEmptyStringGetter(
-        generatedType: TypeId,
-        methodName: String,
-    ) {
-        val methodId = MethodId.of(
-            generatedType,
-            methodName,
-            ProtoId.of(TypeId.of(String::class.java)),
-        )
-        withMethod { methodBuilder ->
-            methodBuilder
-                .of(methodId)
-                .withFlags(ACC_PUBLIC)
-                .withCode(1) { code ->
-                    code
-                        .const_string(code.l(0), "")
                         .return_object(code.l(0))
                 }
         }

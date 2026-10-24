@@ -194,6 +194,8 @@ private fun MainSettings(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        HorizontalDivider()
+        ModuleUpdateSetting()
     }
 }
 

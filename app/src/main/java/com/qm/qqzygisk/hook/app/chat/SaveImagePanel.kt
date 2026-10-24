@@ -2041,7 +2041,7 @@ private fun Context.dp(value: Int): Int =
     (value * resources.displayMetrics.density).toInt()
 
 /** Module views must use a fresh inflater: cloneInContext also copies the host's Factory2. */
-private class ModuleContext(
+internal class ModuleContext(
     base: Context,
     themeRes: Int,
     private val moduleLoader: ClassLoader,

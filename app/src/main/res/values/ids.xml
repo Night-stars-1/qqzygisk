@@ -5,4 +5,9 @@
       只是模块自己的 id 常量，用 setTag(id, obj) 不会和宿主现有 tag 冲突。
     -->
     <item name="qqz_recalled_badge" type="id" />
+    <!--
+      B 站网页卡片在宿主 Ark 内容容器上保存替换状态的 tag key。
+      只是模块自己的 id 常量，用 setTag(id, obj) 不会和宿主现有 tag 冲突。
+    -->
+    <item name="qqz_bili_web_card" type="id" />
 </resources>

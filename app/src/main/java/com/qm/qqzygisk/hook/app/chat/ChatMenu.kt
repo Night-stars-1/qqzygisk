@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 enum class ChatMenuType(internal val className: String?) {
     Pic("com.tencent.qqnt.kernel.nativeinterface.PicElement"),
+    Ark("com.tencent.qqnt.kernel.nativeinterface.ArkElement"),
     Any(null),
 }
 
@@ -40,6 +41,7 @@ object ChatMenu {
     private val entries = CopyOnWriteArrayList<MenuEntry>()
     private val listFields = ConcurrentHashMap<Class<*>, Field>()
     private val messageMethods = ConcurrentHashMap<Class<*>, Method>()
+    private val menuTextMethods = ConcurrentHashMap<Class<*>, MenuTextMethods>()
     private val msgRecordMethods = ConcurrentHashMap<Class<*>, Method>()
     private val elementsMethods = ConcurrentHashMap<Class<*>, Method>()
     private val elementGetterMethods = ConcurrentHashMap<ElementGetterKey, Method>()
@@ -50,6 +52,7 @@ object ChatMenu {
         val type: ChatMenuType,
         val icon: Int,
         val visible: () -> Boolean,
+        val matches: (Any) -> Boolean,
         val position: ChatMenuPosition,
         val onClick: (Context, Any) -> Unit,
         val itemId: Int = View.generateViewId(),
@@ -59,6 +62,8 @@ object ChatMenu {
         val elementClass: Class<*>,
         val elementType: Class<*>,
     )
+
+    private data class MenuTextMethods(val title: Method, val identifier: Method)
 
     /**
      * 注册一个长按菜单项。首次调用时自动 hook QQ 的 setMenu。
@@ -70,6 +75,7 @@ object ChatMenu {
      * @param type 消息内容类型，当前消息没有该内容则不插入
      * @param icon 菜单图标资源 id
      * @param position 插在现有菜单前面还是后面，默认后面
+     * @param matches 按匹配到的消息/元素内容判断是否显示，避免把专用操作加到其它卡片上
      * @param onClick 点击回调，参数为菜单 Context 和匹配到的内容对象
      */
     fun addMenuItem(
@@ -78,10 +84,11 @@ object ChatMenu {
         icon: Int,
         visible: () -> Boolean = { true },
         position: ChatMenuPosition = ChatMenuPosition.Back,
+        matches: (Any) -> Boolean = { true },
         onClick: (Context, Any) -> Unit,
     ) {
         val previous = entries.firstOrNull { it.title == title && it.type == type && it.position == position }
-        val entry = MenuEntry(title, type, icon, visible, position, onClick, previous?.itemId ?: View.generateViewId())
+        val entry = MenuEntry(title, type, icon, visible, matches, position, onClick, previous?.itemId ?: View.generateViewId())
         if (previous == null) entries += entry else entries[entries.indexOf(previous)] = entry
         ensureHooked()
     }
@@ -147,17 +154,16 @@ object ChatMenu {
         val methods = baseClass.declaredMethods.filter {
             it.parameterCount == 0 && !Modifier.isStatic(it.modifiers) && !Modifier.isFinal(it.modifiers)
         }
-        val stringMethods = methods.filter { it.returnType == String::class.java }
+        val stringMethods = methods.filter {
+            it.returnType == String::class.java && Modifier.isAbstract(it.modifiers)
+        }
         val intMethods = methods.filter { it.returnType == Int::class.javaPrimitiveType }
         val clickMethods = methods.filter {
             it.returnType == Void.TYPE && Modifier.isAbstract(it.modifiers)
         }
 
-        check(stringMethods.isNotEmpty()) { "未找到菜单项标题方法: ${baseClass.name}" }
-        val titleMethods = findTitleStringMethods(items, stringMethods)
-        val emptyStringMethods = stringMethods.filter { method ->
-            Modifier.isAbstract(method.modifiers) && titleMethods.none { it.name == method.name }
-        }
+        val textMethods = menuTextMethods[baseClass] ?: resolveMenuTextMethods(items, stringMethods)
+            .also { menuTextMethods[baseClass] = it }
         check(intMethods.size in 1..2) { "菜单项 int 方法数量异常: ${baseClass.name}" }
         check(clickMethods.size == 1) { "菜单项点击方法数量异常: ${baseClass.name}" }
 
@@ -173,8 +179,8 @@ object ChatMenu {
         val backItems = mutableListOf<Any>()
         visibleEntries.forEach { entry ->
             val clickTarget = when (entry.type) {
-                ChatMenuType.Any -> message
-                else -> findMessageElement(message, entry.type.resolveClass()) ?: return@forEach
+                ChatMenuType.Any -> message.takeIf(entry.matches) ?: return@forEach
+                else -> findMessageElement(message, entry.type.resolveClass(), entry.matches) ?: return@forEach
             }
             val item = ChatMenuItemFactory.create(
                 baseClass = baseClass,
@@ -182,8 +188,8 @@ object ChatMenu {
                 title = entry.title,
                 icon = entry.icon,
                 id = entry.itemId,
-                stringMethods = titleMethods,
-                emptyStringMethods = emptyStringMethods,
+                titleMethod = textMethods.title,
+                identifierMethod = textMethods.identifier,
                 iconMethod = iconMethod,
                 idMethod = idMethod,
                 clickMethod = clickMethod,
@@ -199,7 +205,7 @@ object ChatMenu {
         items.addAll(backItems)
     }
 
-    private fun findMessageElement(message: Any, elementType: Class<*>): Any? {
+    private fun findMessageElement(message: Any, elementType: Class<*>, matches: (Any) -> Boolean): Any? {
         val getMsgRecord = msgRecordMethods[message.javaClass]
             ?: message.javaClass.getMethod("getMsgRecord").also {
                 msgRecordMethods[message.javaClass] = it
@@ -219,7 +225,7 @@ object ChatMenu {
                 }.also {
                     elementGetterMethods[getterKey] = it
                 }
-            getElement.invoke(element)?.let { return it }
+            getElement.invoke(element)?.let { if (matches(it)) return it }
         }
         return null
     }
@@ -247,18 +253,36 @@ object ChatMenu {
         error("未找到 QQ 菜单项基类: ${itemClass.name}")
     }
 
-    private fun findTitleStringMethods(
+    private fun resolveMenuTextMethods(
         items: List<Any>,
         stringMethods: List<Method>,
-    ): List<Method> {
+    ): MenuTextMethods {
+        check(stringMethods.size == 2) { "菜单项标题/标识协议不明确: ${stringMethods.map { it.name }}" }
         stringMethods.forEach { it.isAccessible = true }
-        val matches = stringMethods.filter { method ->
-            items.any { item ->
-                val value = runCatching { method.invoke(item) as? String }.getOrNull()
-                !value.isNullOrBlank()
+        // The host's own debug representation embeds its primary title. Match that
+        // exact slot, not every non-empty string (subtitle/a11y/key/toString).
+        val prefix = "QQCustomMenuItem{title='"
+        val suffix = "', special="
+        var candidates = 3
+        for (item in items) {
+            val description = item.toString()
+            if (!description.startsWith(prefix)) continue
+            val end = description.lastIndexOf(suffix)
+            if (end < prefix.length) continue
+            for (index in stringMethods.indices) {
+                val bit = 1 shl index
+                if (candidates and bit == 0) continue
+                val value = (stringMethods[index].invoke(item) as? String) ?: "null"
+                if (value.length != end - prefix.length ||
+                    !description.regionMatches(prefix.length, value, 0, value.length)
+                ) candidates = candidates and bit.inv()
             }
         }
-        return matches.ifEmpty { listOf(stringMethods.first()) }
+        check(candidates == 1 || candidates == 2) {
+            "无法由宿主菜单标题唯一定位 getter: ${stringMethods.map { it.name }}"
+        }
+        val title = if (candidates == 1) 0 else 1
+        return MenuTextMethods(stringMethods[title], stringMethods[1 - title])
     }
 
     private fun findIconMethod(
