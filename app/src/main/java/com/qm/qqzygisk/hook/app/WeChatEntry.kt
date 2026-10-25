@@ -32,6 +32,8 @@ object WeChatEntry {
         if (activity.javaClass.name.startsWith(ModuleUtils.modulePackageName)) return
         HostData.alignHostClassLoader(activity.javaClass.classLoader)
         HookSettings.initialize(activity)
+        runCatching { EmoticonButtonHooker.installHostHooks() }
+            .onFailure { Log.error("安装微信聊天宿主锚点失败", it) }
         WeChatSettingHooker.install()
     }
 

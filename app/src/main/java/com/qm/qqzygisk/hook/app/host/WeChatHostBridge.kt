@@ -7,6 +7,7 @@ import com.qm.qqzygisk.hook.app.chat.WeChatEmoticonSender
 import com.qm.qqzygisk.hook.app.chat.WeChatImageSender
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.app.hooker.WeChatSettingHooker
+import com.qm.qqzygisk.hook.app.hooker.WeChatEmoticonButtonHooker
 import java.io.File
 
 /**
@@ -31,6 +32,10 @@ internal object WeChatHostBridge : HostBridge {
         ).asSequence().mapNotNull { name ->
             runCatching { Class.forName(name, false, appClassLoader) }.getOrNull()
         }.firstOrNull { Activity::class.java.isAssignableFrom(it) }
+
+    override fun installBeforeChat() {
+        WeChatEmoticonButtonHooker.install()
+    }
 
     override fun sessionFor(view: View): ChatSessionRef? = WeChatChatSession.sessionFor(view)
 
