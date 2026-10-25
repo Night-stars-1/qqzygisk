@@ -47,6 +47,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.qm.qqzygisk.BuildConfig
 import com.qm.qqzygisk.hook.utils.ModuleDownload
 import com.qm.qqzygisk.hook.utils.ModuleDownloadProgress
+import com.qm.qqzygisk.hook.utils.ModuleDownloadStatus
 import com.qm.qqzygisk.hook.utils.ModuleDownloads
 import com.qm.qqzygisk.hook.utils.ModuleRelease
 import com.qm.qqzygisk.hook.utils.ModuleUpdates
@@ -69,7 +70,7 @@ import kotlinx.coroutines.withContext
  *
  * ZIP 由系统 DownloadManager 下载到公共“下载”目录：关闭弹窗只隐藏界面，
  * 不会取消系统任务，也不会中断本页正在展示的下载进度；只有“取消下载”才删除任务。
- * 已保存的任务会从本地恢复，即使更新源暂时不可用也能继续查看、取消或打开。
+ * 已保存的任务会从本地恢复；设置页只显示未完成任务或错误，“打开 ZIP”仅在更新弹窗下载完成后提供。
  */
 @Composable
 internal fun ModuleUpdateSetting() {
@@ -321,7 +322,8 @@ internal fun ModuleUpdateSetting() {
     }
     val starting = downloadBusy || pendingRelease != null
     val inlineDownloadVisible = !dialogVisible && (
-        activeDownload != null || starting || downloadError != null || progressReadFailed
+        (activeDownload != null && visibleProgress?.status != ModuleDownloadStatus.Complete) ||
+            starting || downloadError != null || progressReadFailed
         )
 
     Row(
@@ -357,7 +359,7 @@ internal fun ModuleUpdateSetting() {
         }
     }
 
-    // 关闭弹窗后仍可继续查看、取消或打开已有任务；这里不产生新的弹窗。
+    // 关闭弹窗后只保留未完成任务与错误；已完成下载的打开入口仅在更新弹窗内显示。
     if (inlineDownloadVisible) {
         ModuleDownloadControls(
             release = updateRelease,
@@ -369,7 +371,7 @@ internal fun ModuleUpdateSetting() {
             onDownload = { updateRelease?.let { requestDownload(it) } },
             onCancel = { cancelDownload() },
             onRetryRead = { retryReadProgress() },
-            onOpenZip = { openDownloadedZip(it) },
+            onOpenZip = null,
             onClose = null,
             modifier = Modifier.padding(bottom = 16.dp),
         )

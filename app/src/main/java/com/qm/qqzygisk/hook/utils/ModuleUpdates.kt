@@ -28,10 +28,10 @@ internal object ModuleUpdates {
     fun releaseNotes(release: ModuleRelease): String {
         val url = release.changelogUrl ?: return ""
         val text = request(httpsUrl(url))
-        // The repository file contains all releases; do not display historical entries.
+        // 弹窗已有模块更新版本标题，正文仅保留本版本内容，不重复文件标题或历史条目。
         val first = releaseHeading.find(text) ?: return text.trim()
         val next = releaseHeading.find(text, first.range.last + 1)
-        return text.substring(first.range.first, next?.range?.first ?: text.length).trim()
+        return text.substring(first.range.last + 1, next?.range?.first ?: text.length).trim()
     }
 
     private fun httpsUrl(value: String): String {

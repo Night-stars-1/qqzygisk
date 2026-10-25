@@ -28,7 +28,7 @@ import com.qm.qqzygisk.hook.utils.ModuleRelease
  * 模块 ZIP 下载的底部区域：上方是进度条与右侧百分比，下方是操作按钮。
  *
  * 只有下载任务活动、正在创建或正在读取状态时才显示进度条；总量未知时百分比显示“—”，
- * 不伪造 0%。下载完成隐藏进度条，只保留“打开 ZIP”；失败隐藏进度条，
+ * 不伪造 0%。下载完成隐藏进度条，只有提供打开操作的更新弹窗才显示“打开 ZIP”；失败隐藏进度条，
  * 只显示真实错误与重新下载。状态未知（查询异常）提供“刷新进度”，不当作任务丢失。
  */
 @Composable
@@ -42,7 +42,7 @@ internal fun ModuleDownloadControls(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onRetryRead: () -> Unit,
-    onOpenZip: (ModuleDownload) -> Unit,
+    onOpenZip: ((ModuleDownload) -> Unit)?,
     onClose: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
@@ -96,18 +96,9 @@ internal fun ModuleDownloadControls(
                     Text(text = "取消下载")
                 }
 
-                complete != null -> {
-                    if (release != null && release.versionCode != complete.versionCode) {
-                        TextButton(onClick = { onOpenZip(complete) }) {
-                            Text(text = "打开 ZIP")
-                        }
-                        Button(onClick = onDownload) {
-                            Text(text = "下载更新")
-                        }
-                    } else {
-                        Button(onClick = { onOpenZip(complete) }) {
-                            Text(text = "打开 ZIP")
-                        }
+                complete != null && onOpenZip != null && release?.versionCode == complete.versionCode -> {
+                    Button(onClick = { onOpenZip(complete) }) {
+                        Text(text = "打开 ZIP")
                     }
                 }
 
@@ -119,7 +110,7 @@ internal fun ModuleDownloadControls(
                     Text(text = "刷新进度")
                 }
 
-                !starting && download == null && release != null -> Button(onClick = onDownload) {
+                !starting && release != null && (download == null || complete != null) -> Button(onClick = onDownload) {
                     Text(text = "下载更新")
                 }
             }
