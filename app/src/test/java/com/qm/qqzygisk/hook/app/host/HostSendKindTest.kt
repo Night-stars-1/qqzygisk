@@ -34,7 +34,7 @@ class HostSendKindTest {
     @Test
     fun `a stale asynchronous Douyin emoji action reports failure without uploading`() {
         var completed = false
-        DouyinHostBridge.sendAsync(File("unused"), SendKind.EMOTICON, null) { result ->
+        DouyinHostBridge.sendAsync(File("unused"), SendKind.EMOTICON, null, onEnqueued = {}) { result ->
             assertTrue(result.isFailure)
             completed = true
         }

@@ -70,8 +70,19 @@ internal interface HostBridge {
     /** 发送本地文件到 [session] 指向的会话。 */
     fun send(file: File, kind: SendKind, session: ChatSessionRef?): Result<Unit>
 
-    /** 含上传流程的宿主在真正提交消息后回调；同步宿主沿用现有发送逻辑。 */
-    fun sendAsync(file: File, kind: SendKind, session: ChatSessionRef?, complete: (Result<Unit>) -> Unit) {
+    /**
+     * [complete] 报告启动失败或发送终态；同步宿主沿用现有发送逻辑。
+     *
+     * [onEnqueued] 只在本次发送确实入队、面板可以关闭时调用，之后仍以 [complete]
+     * 回调真实终态；同步宿主不调用它。
+     */
+    fun sendAsync(
+        file: File,
+        kind: SendKind,
+        session: ChatSessionRef?,
+        onEnqueued: () -> Unit,
+        complete: (Result<Unit>) -> Unit,
+    ) {
         complete(runCatching { send(file, kind, session).getOrThrow() })
     }
 

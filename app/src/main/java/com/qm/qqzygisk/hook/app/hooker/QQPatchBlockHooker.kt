@@ -1,5 +1,8 @@
 package com.qm.qqzygisk.hook.app.hooker
 
+import android.app.Instrumentation
+import android.content.Context
+import com.qm.qqzygisk.hook.app.QQEntry
 import com.qm.qqzygisk.hook.app.base.BaseHooker
 import com.qm.qqzygisk.hook.app.data.HostData.toAppClass
 import com.qm.qqzygisk.hook.extension.hook
@@ -23,6 +26,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   只拦更内层的实现会触发清理；
  * - `PatchLazyLoadEngine.tryLazyLoadPatch(RFixLoadResult)`：延迟加载，独立入口；
  * - `PatchLoadEngineImmediate.tryLoadPatch(boolean)`：即时加载，独立入口。
+ *
+ * 宿主在 Application 构造期间就会触发首次加载，因此安装三个边界前先经标准框架入口
+ * [Instrumentation.newApplication] 提前初始化 [HookSettings]，否则重启后第一次加载只能拿到
+ * 默认值 `true`，用户关闭拦截后仍会被拦一次。
  */
 object QQPatchBlockHooker : BaseHooker() {
     override val key = "block_patch_load"
@@ -41,6 +48,9 @@ object QQPatchBlockHooker : BaseHooker() {
     @Volatile
     var installed = false
         private set
+
+    /** 宿主 Application 构造前的设置初始化每个进程只做一次 */
+    private val earlySettingsRead = AtomicBoolean(false)
 
     private class Boundary(
         val method: Method,
@@ -68,6 +78,8 @@ object QQPatchBlockHooker : BaseHooker() {
     }
 
     override fun initOnce() {
+        // 必须先于三个边界：首次热补丁加载发生在 Application 构造期间，早于 attachBaseContext 回调。
+        installEarlySettingsRead()
         installed = false
         val prepared = try {
             prepare()
@@ -105,6 +117,55 @@ object QQPatchBlockHooker : BaseHooker() {
             "QQ 热补丁拦截已安装: " +
                 prepared.boundaries.joinToString { "${it.method.declaringClass.simpleName}.${it.method.name}" },
         )
+    }
+
+    /**
+     * 在标准框架创建 Application 的入口上提前初始化 [HookSettings]。
+     *
+     * 此时宿主 Context 已可用，早于 Application.attachBaseContext；读取失败时保持未初始化，
+     * 边界仍按默认值拦截，不会一律放行。
+     */
+    private fun installEarlySettingsRead() {
+        // 实例重载与静态重载都先于 Application 实例化，任一重载安装失败都不影响另一个
+        hookNewApplication(
+            signature = "newApplication(ClassLoader, String, Context)",
+            parameterTypes = arrayOf<Class<*>>(ClassLoader::class.java, String::class.java, Context::class.java),
+        )
+        hookNewApplication(
+            signature = "newApplication(Class, Context)",
+            parameterTypes = arrayOf<Class<*>>(Class::class.java, Context::class.java),
+        )
+    }
+
+    private fun hookNewApplication(signature: String, parameterTypes: Array<Class<*>>) {
+        val method = Instrumentation::class.java.declaredMethods.singleOrNull {
+            it.name == "newApplication" && it.parameterTypes.contentEquals(parameterTypes)
+        }
+        if (method == null) {
+            Log.warn("当前 Android 版本没有唯一的 Instrumentation.$signature，跳过提前读取热补丁开关")
+            return
+        }
+        runCatching {
+            method.hook {
+                before {
+                    // 两个重载的最后一个参数都是宿主 Context（实例重载的 args 不含 instance 本身）
+                    val context = args.lastOrNull() as? Context ?: return@before
+                    if (context.packageName != QQEntry.hostPackageName) return@before
+                    if (!earlySettingsRead.compareAndSet(false, true)) return@before
+                    try {
+                        HookSettings.initialize(context)
+                        Log.info(
+                            "宿主 Application 构造前已读取热补丁开关: " +
+                                "$key=${HookSettings.isEnabled(key, defaultEnabled)}",
+                        )
+                    } catch (th: Throwable) {
+                        Log.error("宿主 Application 构造前读取热补丁开关失败，本进程按默认值拦截", th)
+                    }
+                }
+            }
+        }.onFailure {
+            Log.error("安装 Instrumentation.$signature 提前读取热补丁开关失败，本进程按默认值拦截", it)
+        }
     }
 
     private fun prepare(): Prepared {

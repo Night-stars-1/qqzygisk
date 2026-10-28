@@ -31,7 +31,14 @@ internal object DouyinHostBridge : HostBridge {
         }.getOrThrow()
     }
 
-    override fun sendAsync(file: File, kind: SendKind, session: ChatSessionRef?, complete: (Result<Unit>) -> Unit) {
+    /** 抖音面板只有普通图片，同步终态由 [complete] 承担；图片没有独立入队事件。 */
+    override fun sendAsync(
+        file: File,
+        kind: SendKind,
+        session: ChatSessionRef?,
+        onEnqueued: () -> Unit,
+        complete: (Result<Unit>) -> Unit,
+    ) {
         runCatching {
             check(kind == SendKind.IMAGE) { "抖音面板当前使用普通图片发送，请重新打开面板" }
             val target = currentTarget(session)

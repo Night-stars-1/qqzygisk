@@ -8,6 +8,7 @@ import com.qm.qqzygisk.hook.app.chat.WeChatImageSender
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.app.hooker.WeChatSettingHooker
 import com.qm.qqzygisk.hook.app.hooker.WeChatEmoticonButtonHooker
+import com.qm.qqzygisk.hook.utils.Log
 import java.io.File
 
 /**
@@ -39,24 +40,48 @@ internal object WeChatHostBridge : HostBridge {
 
     override fun sessionFor(view: View): ChatSessionRef? = WeChatChatSession.sessionFor(view)
 
-    override fun send(file: File, kind: SendKind, session: ChatSessionRef?): Result<Unit> {
-        val target = when (val resolved = session?.resolve() ?: SessionTarget.Unavailable) {
-            is SessionTarget.Ready -> resolved.target as? String
-            SessionTarget.Changed -> return Result.failure(IllegalStateException("聊天会话已切换，请重新打开面板"))
-            SessionTarget.Unavailable -> null
-        }
-        return when (kind) {
-            SendKind.IMAGE -> WeChatImageSender.send(
-                file = file,
-                talker = target?.takeIf { it.isNotBlank() },
-            )
-
+    /** 返回值仅表示启动结果；面板走 sendAsync，成功历史仍以原生上传和发送终态为准。 */
+    override fun send(file: File, kind: SendKind, session: ChatSessionRef?): Result<Unit> = runCatching {
+        val target = currentTalker(session)
+        when (kind) {
+            SendKind.IMAGE -> WeChatImageSender.send(file, target).getOrThrow()
             SendKind.EMOTICON -> WeChatEmoticonSender.send(
-                file = file,
-                talker = target?.takeIf { it.isNotBlank() },
-            )
+                file, target, { currentTalker(session) },
+            ) { result ->
+                result.onFailure { Log.warn("微信原生表情发送未完成（${it.javaClass.simpleName}）") }
+            }.getOrThrow()
         }
     }
+
+    /**
+     * 原生表情的返回值只表示启动（入队）结果：成功后面板立即关闭，上传/发送终态仍走
+     * [complete]。同步先到的失败终态与随后的入队回调由面板按一次终态 + 关闭处理。
+     */
+    override fun sendAsync(
+        file: File,
+        kind: SendKind,
+        session: ChatSessionRef?,
+        onEnqueued: () -> Unit,
+        complete: (Result<Unit>) -> Unit,
+    ) {
+        runCatching {
+            val target = currentTalker(session)
+            when (kind) {
+                SendKind.IMAGE -> complete(WeChatImageSender.send(file, target))
+                SendKind.EMOTICON -> WeChatEmoticonSender.send(
+                    file, target, { currentTalker(session) }, complete,
+                ).onSuccess { runCatching { onEnqueued() } }.getOrThrow()
+            }
+        }.onFailure { complete(Result.failure(it)) }
+    }
+
+    private fun currentTalker(session: ChatSessionRef?): String =
+        when (val resolved = session?.resolve() ?: SessionTarget.Unavailable) {
+            is SessionTarget.Ready -> (resolved.target as? String)?.takeIf { it.isNotBlank() }
+                ?: error("没有可用的聊天会话，请重新进入聊天页面")
+            SessionTarget.Changed -> error("聊天会话已切换，请重新打开面板")
+            SessionTarget.Unavailable -> error("没有可用的聊天会话，请重新进入聊天页面")
+        }
 
     override fun installSettingsEntry(activity: Activity): Boolean = WeChatSettingHooker.install()
 }

@@ -10,6 +10,8 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.text.TextUtils
 import android.util.AttributeSet
@@ -50,6 +52,7 @@ import java.io.File
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class ImagePanelAction(
     val id: String,
@@ -57,7 +60,11 @@ data class ImagePanelAction(
     val iconRes: Int,
     val contentDescription: String = label,
     val perform: (File) -> Result<Unit>,
-    val performAsync: ((File, (Result<Unit>) -> Unit, () -> Boolean) -> Unit)? = null,
+    /**
+     * 参数依次为文件、终态回调、面板有效性检查、入队通知。
+     * 只有宿主确认原生入队后才调用第 4 个参数（面板随即关闭）；终态仍单独回调。
+     */
+    val performAsync: ((File, (Result<Unit>) -> Unit, () -> Boolean, () -> Unit) -> Unit)? = null,
 )
 
 /**
@@ -104,6 +111,8 @@ class SaveImagePanel private constructor(
     private var saveButton: TextView? = null
     private var previewDialog: Dialog? = null
     private var performingAction = false
+    /** 面板关闭会移除 View，异步回调统一投递到主线程 Looper 而不是具体 View。 */
+    private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile
     private var lastAccessErrorAt = 0L
     private var selectedAction = actions.firstOrNull { it.id == initialActionId }
@@ -1468,34 +1477,61 @@ class SaveImagePanel private constructor(
         }
     }
 
+    /**
+     * 异步操作的完成语义：
+     * - 宿主确认原生入队即关闭面板，不等上传终态；
+     * - 真实终态只处理一次（可能早于入队回调同步到达），成功才记历史，失败仍提示；
+     * - 入队后面板已关闭，终态照常处理历史/提示，但不重新走已关闭的 IO 或会话解析；
+     * - 用户手动关闭且未入队时，晚到的终态直接丢弃；
+     * - 旧操作的终态不会关闭之后新打开的面板。
+     */
     private fun performActionWithFile(
         action: ImagePanelAction,
         entry: ImageEntry,
         file: File,
         generation: Int,
     ) {
+        val panel = panelDialog
+        val enqueued = AtomicBoolean()
+        val terminal = AtomicBoolean()
         val finish: (Result<Unit>) -> Unit = { result ->
-            titleView.post {
-                if (!closed) {
-                    performImagePanelAction(
-                        send = { result },
-                        recordUsage = { ImageFolderStore.recordUsage(entry) },
-                        onUsageFailure = { Log.error("发送已提交，更新表情历史失败", it) },
-                    ).onSuccess {
-                        panelDialog?.dismiss()
-                    }.onFailure {
-                        performingAction = false
-                        Log.error("${action.label}失败: ${entry.key}", it)
-                        Toast.makeText(context, it.message ?: "${action.label}失败", Toast.LENGTH_LONG)
-                            .show()
-                    }
+            if (terminal.compareAndSet(false, true)) {
+                mainHandler.post {
+                    runCatching {
+                        if (enqueued.get() || (!closed && generation == imageGeneration)) {
+                            performImagePanelAction(
+                                send = { result },
+                                recordUsage = { ImageFolderStore.recordUsage(entry) },
+                                onUsageFailure = { Log.error("发送已提交，更新表情历史失败", it) },
+                            ).onSuccess {
+                                if (panelDialog === panel) panel?.dismiss()
+                            }.onFailure {
+                                performingAction = false
+                                Log.error("${action.label}失败: ${entry.key}", it)
+                                Toast.makeText(
+                                    context,
+                                    it.message ?: "${action.label}失败",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }
+                    }.onFailure { Log.error("${action.label}终态处理失败: ${entry.key}", it) }
+                }
+            }
+        }
+        val onEnqueued: () -> Unit = {
+            runCatching {
+                enqueued.set(true)
+                mainHandler.post {
+                    if (panelDialog === panel) panel?.dismiss()
                 }
             }
         }
         val async = action.performAsync
         val active = { !closed && generation == imageGeneration }
         if (async != null) {
-            runCatching { async(file, finish, active) }.onFailure { finish(Result.failure(it)) }
+            runCatching { async(file, finish, active, onEnqueued) }
+                .onFailure { finish(Result.failure(it)) }
         } else {
             finish(runCatching { action.perform(file).getOrThrow() })
         }

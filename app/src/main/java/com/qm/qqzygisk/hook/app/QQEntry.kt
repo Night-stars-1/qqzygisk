@@ -10,6 +10,7 @@ import com.qm.qqzygisk.hook.app.chat.NtImageRkeyProvider
 import com.qm.qqzygisk.hook.app.hooker.AntiRevokeHooker
 import com.qm.qqzygisk.hook.app.hooker.BiliMiniAppWebCardHooker
 import com.qm.qqzygisk.hook.app.hooker.ChatMenuHooker
+import com.qm.qqzygisk.hook.app.hooker.DisableReplyAtHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonButtonHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonPanelHooker
 import com.qm.qqzygisk.hook.app.hooker.EmotionToPicHooker
@@ -51,7 +52,9 @@ object QQEntry {
     /** 宿主 ClassLoader 对比日志只输出一次 */
     private val hostClassLoaderLogged = AtomicBoolean(false)
 
-    private var hostPackageName: String = ""
+    /** 宿主的 LoadedApk 包名（与 `Context.packageName` 同源），热补丁拦截在 Application 构造前用它过滤宿主 Context */
+    internal var hostPackageName: String = ""
+        private set
 
     fun init(
         loader: ClassLoader,
@@ -97,6 +100,7 @@ object QQEntry {
                 ChatMenuHooker,
                 RepeaterHooker,
                 BiliMiniAppWebCardHooker,
+                DisableReplyAtHooker,
                 EmoticonButtonHooker,
                 EmoticonPanelHooker,
                 EmotionToPicHooker,
@@ -111,7 +115,9 @@ object QQEntry {
                 settings.add(hooker.toSettingData())
                 settings.addAll(hooker.extraSettings)
             }
-            if (hooker !== QQPatchBlockHooker && hooker !== BiliMiniAppWebCardHooker && hooker !in hostUiHookers) hooker.load()
+            if (hooker !== QQPatchBlockHooker && hooker !== BiliMiniAppWebCardHooker &&
+                hooker !== DisableReplyAtHooker && hooker !in hostUiHookers
+            ) hooker.load()
         }
         StartActivityHooker.decorators.forEach { hooker ->
             if (hooker.isShow) {
@@ -146,6 +152,8 @@ object QQEntry {
             .onFailure { Log.warn("安装已撤回标记 hook 失败", it) }
         // 展示转换独立安装，协议漂移不能令菜单/设置等宿主 UI hook 进入失败终态。
         BiliMiniAppWebCardHooker.load()
+        // 引用自动 @ 独立安装，协议漂移不影响其它宿主 UI hook。
+        DisableReplyAtHooker.load()
     }
 
     /**

@@ -160,9 +160,9 @@ object EmoticonButtonHooker : BaseHooker() {
                 },
                 contentDescription = kind.contentDescription,
                 perform = { file -> HostRuntime.current.send(file, kind, session) },
-                performAsync = { file, complete, active ->
+                performAsync = { file, complete, active, onEnqueued ->
                     val guardedSession = session?.withPanelGuard(active)
-                    HostRuntime.current.sendAsync(file, kind, guardedSession, complete)
+                    HostRuntime.current.sendAsync(file, kind, guardedSession, onEnqueued, complete)
                 },
             )
         }
