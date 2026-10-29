@@ -68,7 +68,7 @@ internal fun ModuleUpdateMarkdown(text: String, modifier: Modifier = Modifier) {
             })
             .build()
     }
-    // Download progress may recompose its parent every 700ms; parse each document only once.
+    // Streamed byte updates may recompose the parent; parse each document only once.
     val rendered = remember(renderer, text) { renderer.toMarkdown(text) }
     AndroidView(
         modifier = modifier,

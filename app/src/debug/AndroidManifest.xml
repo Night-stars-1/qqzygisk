@@ -7,5 +7,11 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
             android:theme="@style/Theme.AppDefault" />
+        <!-- 仅 debug：独立进程的下载恢复探针，用于真实强停/重启流程，release 不包含。 -->
+        <activity
+            android:name="com.qm.qqzygisk.testing.ModuleDownloadProbeActivity"
+            android:exported="false"
+            android:process=":module_download_probe"
+            android:theme="@style/Theme.AppDefault" />
     </application>
 </manifest>

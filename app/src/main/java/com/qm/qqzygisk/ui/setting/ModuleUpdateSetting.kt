@@ -53,7 +53,7 @@ import com.qm.qqzygisk.hook.utils.ModuleRelease
 import com.qm.qqzygisk.hook.utils.ModuleUpdates
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -68,9 +68,9 @@ import kotlinx.coroutines.withContext
  * 右侧显示真实百分比（总量未知时显示“—”），下载完成后只提供“打开 ZIP”，
  * 不会自动安装。失败的下载只显示错误与重新下载。
  *
- * ZIP 由系统 DownloadManager 下载到公共“下载”目录：关闭弹窗只隐藏界面，
- * 不会取消系统任务，也不会中断本页正在展示的下载进度；只有“取消下载”才删除任务。
- * 已保存的任务会从本地恢复；设置页只显示未完成任务或错误，“打开 ZIP”仅在更新弹窗下载完成后提供。
+ * ZIP 由宿主进程流式下载：关闭弹窗只隐藏界面，不取消下载；只有“取消下载”才删除任务。
+ * 宿主被强停后，重新打开设置会恢复未完成任务。下载完成后保存到公共“下载”目录，
+ * “打开 ZIP”仅在当前更新弹窗内提供，且仍需完整文件已成功发布。
  */
 @Composable
 internal fun ModuleUpdateSetting() {
@@ -125,32 +125,29 @@ internal fun ModuleUpdateSetting() {
         }
     }
 
-    // 有任务且页面可见时轮询；终态或离开页面都会停止。关闭弹窗不影响系统下载。
+    // 页面只订阅真实字节快照；离开页面停止订阅，不影响进程级下载任务。
     LaunchedEffect(download?.id, pageStarted, progressRefresh) {
         val target = download ?: return@LaunchedEffect
         if (!pageStarted) return@LaunchedEffect
-        while (true) {
-            val snapshot = try {
-                withContext(Dispatchers.IO) { ModuleDownloads.query(context, target) }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
+        try {
+            ModuleDownloads.observe(context, target).collect { snapshot ->
                 if (download?.id == target.id) {
-                    progress = null
-                    progressReadFailed = true
-                    downloadError =
-                        "无法读取下载进度：${error.message ?: error.javaClass.simpleName}"
+                    progress = snapshot
+                    if (progressReadFailed) {
+                        progressReadFailed = false
+                        downloadError = null
+                    }
                 }
-                return@LaunchedEffect
             }
-            if (download?.id != target.id) return@LaunchedEffect
-            progress = snapshot
-            if (progressReadFailed) {
-                progressReadFailed = false
-                downloadError = null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (download?.id == target.id) {
+                progress = null
+                progressReadFailed = true
+                downloadError =
+                    "无法读取下载进度：${error.message ?: error.javaClass.simpleName}"
             }
-            if (!snapshot.active) return@LaunchedEffect
-            delay(PROGRESS_REFRESH_INTERVAL_MS)
         }
     }
 
@@ -224,10 +221,14 @@ internal fun ModuleUpdateSetting() {
         progressReadFailed = false
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { ModuleDownloads.cancel(context, target) }
+                val remaining = withContext(Dispatchers.IO) {
+                    ModuleDownloads.cancel(context, target)
+                    ModuleDownloads.load(context)
+                }
                 if (download?.id == target.id) {
-                    download = null
+                    download = remaining
                     progress = null
+                    progressRefresh++
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -254,6 +255,8 @@ internal fun ModuleUpdateSetting() {
                 throw cancelled
             } catch (error: Exception) {
                 downloadError = "无法打开下载的 ZIP：${error.message ?: error.javaClass.simpleName}"
+                // 完成任务的订阅已结束；文件被外部删除后重新读取 Missing，恢复重新下载入口。
+                progressRefresh++
                 return@launch
             }
             // 宿主通常以 ContextWrapper 形式提供 Context，必须带 NEW_TASK 才能启动。
@@ -452,8 +455,6 @@ private fun Context.findLifecycleOwner(): LifecycleOwner? {
     }
     return current as? LifecycleOwner
 }
-
-private const val PROGRESS_REFRESH_INTERVAL_MS = 700L
 
 private sealed interface NotesState {
     data class Ready(val text: String) : NotesState

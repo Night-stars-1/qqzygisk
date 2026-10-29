@@ -52,7 +52,7 @@ internal fun ModuleDownloadControls(
     val failed = status == ModuleDownloadStatus.Failed || status == ModuleDownloadStatus.Missing
     val showBar = starting || (download != null && !readFailed && (progress == null || active))
     val percent = if (showBar && !starting) progress?.percentOrNull() else null
-    val statusMessage = progress?.takeIf { failed }?.message
+    val statusMessage = progress?.takeIf { failed || it.status == ModuleDownloadStatus.Pending }?.message
         ?.takeIf { it.isNotBlank() }
         ?.withoutRedownloadHint()
     val message = (error ?: statusMessage)?.withoutRedownloadHint()
@@ -86,7 +86,8 @@ internal fun ModuleDownloadControls(
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+                color = if (error != null || failed) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
