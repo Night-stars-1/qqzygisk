@@ -17,6 +17,20 @@ internal object HostTargetCache {
     private class Resolved(val loader: ClassLoader, val value: Any)
     private val resolved = mutableMapOf<String, Resolved>()
 
+    /** 同版本 JSON 已存在时，调用方可以像 QQ 一样直接恢复，不必先扫描。 */
+    fun cached(key: String): Boolean {
+        val context = AppParasitics.appContext ?: return false
+        @Suppress("DEPRECATION")
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        val file = File(context.filesDir, "qqzygisk/targets/$key.json")
+        if (!file.isFile) return false
+        return runCatching {
+            val document = JSONObject(file.readText())
+            document.getLong("versionCode") == info.longVersionCode &&
+                document.getString("versionName") == info.versionName.orEmpty()
+        }.getOrDefault(false)
+    }
+
     @Synchronized
     fun <T : Any> resolve(key: String, loader: ClassLoader, discover: (Targets) -> T): T {
         val context = checkNotNull(AppParasitics.appContext) { "宿主 Application 尚未初始化" }
@@ -24,7 +38,6 @@ internal object HostTargetCache {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         return resolve(context.filesDir, info.longVersionCode, info.versionName.orEmpty(), key, loader, discover)
     }
-
     @Synchronized
     internal fun <T : Any> resolve(
         privateFiles: File,

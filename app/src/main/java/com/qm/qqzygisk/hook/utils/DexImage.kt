@@ -12,7 +12,7 @@ import java.util.zip.ZipFile
  * 微信每个版本都会位移混淆短名，反射签名不够区分标题、摘要、表情路径和上传队列。
  * 这里按 DEX 规范解码这些形状，不执行、不改宿主字节码。多 DEX 时先出现的类定义优先。
  */
-internal class HostDex(images: List<DexImage>) {
+internal class HostDex(private val images: List<DexImage>) {
     private val located = HashMap<String, DexImage>()
 
     init {
@@ -45,22 +45,44 @@ internal class HostDex(images: List<DexImage>) {
 
     fun forEachMethodId(block: (DexId) -> Unit) {
         val seen = HashSet<String>()
-        for (image in located.values.distinct()) image.forEachMethodId { id ->
+        for (image in images) image.forEachMethodId { id ->
+            if (seen.add(id.key())) block(id)
+        }
+    }
+
+    /** 只物化参数和返回类型都匹配的方法，不把整张方法表变成字符串。 */
+    fun forEachMethod(parameterTypes: List<String>, returnType: String?, block: (DexId) -> Unit) {
+        val seen = HashSet<String>()
+        for (image in images) image.forEachMethodMatching(parameterTypes, returnType) { id ->
             if (seen.add(id.key())) block(id)
         }
     }
 
     fun forEachField(block: (DexField) -> Unit) {
         val seen = HashSet<String>()
-        for (image in located.values.distinct()) image.forEachField { field ->
+        for (image in images) image.forEachField { field ->
             if (seen.add("${field.owner}.${field.name}:${field.type}")) block(field)
         }
     }
 
-    fun methodsReferencing(text: String): List<DexId> {
+    fun forEachField(owner: String?, type: String, block: (DexField) -> Unit) {
+        val seen = HashSet<String>()
+        for (image in images) image.forEachFieldMatching(owner, type) { field ->
+            if (seen.add("${field.owner}.${field.name}:${field.type}")) block(field)
+        }
+    }
+
+    fun methodsReferencing(
+        text: String,
+        parameterTypes: List<String>? = null,
+        returnType: String? = null,
+        staticOnly: Boolean = false,
+    ): List<DexId> {
         val found = LinkedHashMap<String, DexId>()
-        for (image in located.values.distinct()) {
-            for (id in image.methodsReferencing(text)) found.putIfAbsent(id.key(), id)
+        for (image in images) {
+            for (id in image.methodsReferencing(text, parameterTypes, returnType, staticOnly)) {
+                found.putIfAbsent(id.key(), id)
+            }
         }
         return found.values.toList()
     }
@@ -246,22 +268,130 @@ internal class DexImage(source: ByteBuffer) {
         for (index in 0 until count) block(fieldUse(index, write = false, static = false))
     }
 
-    fun methodsReferencing(text: String): List<DexId> {
-        val wanted = HashSet<Int>()
-        val total = u32(56)
-        for (index in 0 until total) if (stringAt(index) == text) wanted += index
+    fun methodsReferencing(
+        text: String,
+        parameterTypes: List<String>? = null,
+        returnType: String? = null,
+        staticOnly: Boolean = false,
+    ): List<DexId> {
+        val wanted = stringIndexes(text)
         if (wanted.isEmpty()) return emptyList()
+        val params = parameterTypes?.map { typeIndex(it) }
+        if (params != null && params.any { it < 0 }) return emptyList()
+        val ret = returnType?.let { typeIndex(it) } ?: -1
+        if (returnType != null && ret < 0) return emptyList()
         val found = ArrayList<DexId>()
         for ((name, meta) in classes) {
             if (meta.dataOff == 0) continue
             readMembers(meta.dataOff) { methodIndex, access, code ->
                 if (code == 0) return@readMembers
+                if (staticOnly && access and ACC_STATIC == 0) return@readMembers
+                if (params != null && !protoMatches(u16(u32(92) + methodIndex * 8 + 2), ret, params)) {
+                    return@readMembers
+                }
+                if (!containsString(code, wanted)) return@readMembers
                 val ident = methodId(methodIndex, access)
-                if (ident.owner == name && containsString(code, wanted)) found += ident
+                if (ident.owner == name) found += ident
             }
         }
         return found
     }
+
+    fun forEachMethodMatching(parameterTypes: List<String>, returnType: String?, block: (DexId) -> Unit) {
+        val params = parameterTypes.map { typeIndex(it) }
+        if (params.any { it < 0 }) return
+        val ret = returnType?.let { typeIndex(it) } ?: -1
+        if (returnType != null && ret < 0) return
+        val count = u32(88)
+        val base0 = u32(92)
+        for (index in 0 until count) {
+            if (!protoMatches(u16(base0 + index * 8 + 2), ret, params)) continue
+            block(methodId(index, 0))
+        }
+    }
+
+    fun forEachFieldMatching(owner: String?, type: String, block: (DexField) -> Unit) {
+        val typeIdx = typeIndex(type)
+        val ownerIdx = owner?.let { typeIndex(it) } ?: -1
+        if (typeIdx < 0 || (owner != null && ownerIdx < 0)) return
+        val count = u32(80)
+        val base0 = u32(84)
+        for (index in 0 until count) {
+            val base = base0 + index * 8
+            if (u16(base + 2) != typeIdx) continue
+            if (owner != null && u16(base) != ownerIdx) continue
+            block(fieldUse(index, write = false, static = false))
+        }
+    }
+
+    private val typeIndexes = HashMap<String, Int>()
+
+    private fun typeIndex(javaName: String): Int = typeIndexes.getOrPut(javaName) {
+        val raw = descriptorOf(javaName)
+        val count = u32(64)
+        val types = u32(68)
+        val strings = u32(60)
+        var found = -1
+        for (index in 0 until count) {
+            val data = u32(strings + u32(types + index * 4) * 4)
+            if (utf8Equals(data, raw)) {
+                found = index
+                break
+            }
+        }
+        found
+    }
+
+    private fun protoMatches(protoIdx: Int, returnType: Int, params: List<Int>): Boolean {
+        val base = u32(76) + protoIdx * 12
+        if (returnType >= 0 && u32(base + 4) != returnType) return false
+        val paramsOff = u32(base + 8)
+        val size = if (paramsOff == 0) 0 else u32(paramsOff)
+        if (size != params.size) return false
+        for (index in params.indices) {
+            if (u16(paramsOff + 4 + index * 2) != params[index]) return false
+        }
+        return true
+    }
+
+    private fun stringIndexes(text: String): Set<Int> {
+        val raw = text.toByteArray(Charsets.UTF_8)
+        val found = HashSet<Int>()
+        val count = u32(56)
+        val off = u32(60)
+        for (index in 0 until count) {
+            if (utf8Equals(u32(off + index * 4), raw)) found += index
+        }
+        return found
+    }
+
+    /** 比较 DEX 的 MUTF-8 原文。定位用的标记都是 ASCII，和 UTF-8 相同。 */
+    private fun utf8Equals(dataOff: Int, raw: ByteArray): Boolean {
+        var cursor = dataOff
+        while (u8(cursor) and 0x80 != 0) cursor++
+        cursor++
+        var index = 0
+        while (index < raw.size) {
+            val bite = u8(cursor)
+            if (bite == 0 || bite != (raw[index].toInt() and 0xFF)) return false
+            cursor++
+            index++
+        }
+        return u8(cursor) == 0
+    }
+
+    private fun descriptorOf(javaName: String): ByteArray = when (javaName) {
+        "void" -> "V"
+        "boolean" -> "Z"
+        "byte" -> "B"
+        "short" -> "S"
+        "char" -> "C"
+        "int" -> "I"
+        "long" -> "J"
+        "float" -> "F"
+        "double" -> "D"
+        else -> "L${javaName.replace('.', '/')};"
+    }.toByteArray(Charsets.US_ASCII)
 
     private fun containsString(code: Int, wanted: Set<Int>): Boolean {
         var found = false

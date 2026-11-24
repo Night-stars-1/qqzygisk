@@ -19,3 +19,5 @@
     public static ** valueOf(java.lang.String);
 }
 -keep,allowobfuscation,allowoptimization class com.qm.qqzygisk.hook.core.LoadedApkHook { *; }
+ -keep class org.luckypray.dexkit.** { *; }
+ -keep class org.luckypray.dexkit.DexKitBridge { native <methods>; }

@@ -5,8 +5,6 @@ import android.content.Context
 import android.os.Bundle
 import android.view.View
 import com.qm.qqzygisk.hook.app.SettingShape
-import com.qm.qqzygisk.hook.app.WeChatHostDex
-import com.qm.qqzygisk.hook.app.WeChatShapes
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.app.declaredMember
 import com.qm.qqzygisk.hook.app.host.WeChatHostBridge
@@ -32,8 +30,7 @@ internal object WeChatSettingHooker {
         "com.tencent.mm.plugin.setting.ui.setting_new.settings.SettingGroupMain"
     private const val ITEM_TITLE = "QQ Zygisk"
     private const val ITEM_KEY = "QQZygisk_Settings"
-    private const val CACHE_KEY = "wechat-settings"
-
+    internal const val CACHE_KEY = "wechat-settings"
     private class Binding(
         val buildMethod: Method,
         val itemBase: Class<*>,
@@ -59,12 +56,24 @@ internal object WeChatSettingHooker {
     private val itemOwners = WeakHashMap<Any, WeakReference<Activity>>()
     private var installing = false
     private var failureLogged = false
+    private var lastError: Throwable? = null
     private var failedLoader: ClassLoader? = null
     private var bindingLoader: ClassLoader? = null
     private var cachedBinding: Binding? = null
 
     @Synchronized
     fun install(): Boolean {
+        if (!com.qm.qqzygisk.hook.utils.HostTargetCache.cached(CACHE_KEY)) return false
+        return installNow()
+    }
+
+    fun discoverAndInstall() {
+        synchronized(this) { failedLoader = null }
+        if (!installNow()) throw lastError ?: IllegalStateException("微信设置入口定位失败")
+    }
+
+    @Synchronized
+    private fun installNow(): Boolean {
         if (installing) return false
         val loader = appClassLoader
         if (loader === failedLoader) return false
@@ -89,6 +98,7 @@ internal object WeChatSettingHooker {
             )
             true
         } catch (error: Throwable) {
+            lastError = error
             failedLoader = loader
             if (!failureLogged) {
                 failureLogged = true
@@ -113,7 +123,7 @@ internal object WeChatSettingHooker {
     }
 
     private fun discover(loader: ClassLoader, targets: HostTargetCache.Targets): Binding {
-        val shape = WeChatShapes.settings(WeChatHostDex.of(loader))
+        val shape = com.qm.qqzygisk.hook.app.WeChatDexKit.settings()
         val itemBase = Class.forName(shape.itemBase, false, loader)
         val build = Class.forName(shape.builderOwner, false, loader).declaredMember(
             shape.builderName,

@@ -1,3 +1,23 @@
+# qqhook v1.32
+
+微信首次适配提前到进入应用时，并显示扫描进度。QQ 的繁体转简体现在也覆盖回复消息。
+
+## 优化
+
+- 进入微信时，若缺少当前版本的定位缓存，DexKit 会在后台查找设置入口、表情按钮和原生表情发送接口。Material 3 Expressive 弹窗显示扫描阶段，完成后自动关闭；缓存齐全时不重复扫描，也不弹窗。
+
+## 修复
+
+- QQ 回复消息的正文和引用摘要现在也会随「聊天消息繁体转简体」开关转换。只改变本机显示，不修改原消息或发送内容。
+
+## 下载
+
+| 平台 | 安装包 | 架构 |
+| --- | --- | --- |
+| Android 9 及以上（Zygisk 模块） | [qqhook.zip](https://github.com/Night-stars-1/qqzygisk/releases/download/v1.32/qqhook.zip) | arm64-v8a、armeabi-v7a |
+
+[完整变更：v1.31...v1.32](https://github.com/Night-stars-1/qqzygisk/compare/v1.31...v1.32)
+
 # qqhook v1.31
 
 微信的设置入口、表情按钮和原生表情发送改为按方法形状定位，换一个微信版本后不必再改混淆名。

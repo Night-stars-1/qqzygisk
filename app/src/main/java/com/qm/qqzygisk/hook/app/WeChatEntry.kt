@@ -34,7 +34,7 @@ object WeChatEntry {
         HookSettings.initialize(activity)
         runCatching { EmoticonButtonHooker.installHostHooks() }
             .onFailure { Log.error("安装微信聊天宿主锚点失败", it) }
-        WeChatSettingHooker.install()
+        WeChatDexKit.start(activity)
     }
 
     private fun installHostActivityEntry(packageName: String) {

@@ -18,13 +18,14 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.ParameterizedType
 import java.util.WeakHashMap
 
-/** 只处理 QQ 的消息正文控件；不写入消息模型。 */
+/** 只处理 QQ 的消息正文与引用摘要控件；不写入消息模型。 */
 object ChineseSimplifyHooker : BaseHooker() {
     override val key = "simplify_chat_text"
     override val name = "聊天消息繁体转简体"
-    override val description = "仅转换聊天正文的本机显示，不改原消息或发送内容；链接、@ 和表情保持原样。"
+    override val description = "仅转换聊天正文和引用摘要的本机显示，不改原消息或发送内容；链接、@ 和表情保持原样。"
     override val defaultEnabled = false
 
     private class State {
@@ -172,7 +173,65 @@ object ChineseSimplifyHooker : BaseHooker() {
                 }
             }
         }
+        runCatching { installReplyBody(normal, faster) }
+            .onFailure { Log.warn("QQ 回复正文繁简转换 hook 安装失败", it) }
+        runCatching { installReplyPreview(normal) }
+            .onFailure { Log.warn("QQ 引用摘要繁简转换 hook 安装失败", it) }
         HookSettings.registerChangeListener(listener)
+    }
+
+    private fun installReplyBody(normal: Class<*>, faster: Class<*>?) {
+        val component = "com.tencent.mobileqq.aio.msglist.holder.base.BaseMixContentComponent".toAppClass()
+        val message = "com.tencent.mobileqq.aio.msg.AIOMsgItem".toAppClass()
+        val layout = "com.tencent.qqnt.aio.widget.SelectableLinearLayout".toAppClass()
+        val wrapper = "com.tencent.fastertextview.wrapper.a".toAppClass()
+        val params = arrayOf(message, layout, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+        val bind = component.declaredMethods.single {
+            it.returnType == Void.TYPE && !Modifier.isStatic(it.modifiers) && it.parameterTypes.contentEquals(params)
+        }
+        val widgets = component.declaredFields.single {
+            !Modifier.isStatic(it.modifiers) && it.type == List::class.java &&
+                (it.genericType as? ParameterizedType)?.actualTypeArguments?.singleOrNull() == wrapper
+        }.apply { isAccessible = true }
+        val viewOf = wrapper.getDeclaredMethod("g").apply { isAccessible = true }
+        // QQ writes the text before adding its widget to the bubble. Mark only that slot before binding.
+        bind.hook {
+            before {
+                runCatching {
+                    val slot = (widgets.get(instance) as List<*>).getOrNull(args[2] as Int) ?: return@before
+                    val view = viewOf.invoke(slot) as? View ?: return@before
+                    if (view.javaClass === normal || view.javaClass === faster) stateFor(view)
+                }.onFailure { Log.warn("QQ 混合消息正文控件绑定失败", it) }
+            }
+        }
+        Log.info("QQ 混合消息正文繁简转换 hook 已安装")
+    }
+
+    private fun installReplyPreview(normal: Class<*>) {
+        val component = "com.tencent.mobileqq.aio.msglist.holder.component.reply.AIOReplyComponent".toAppClass()
+        val root = "com.tencent.mobileqq.aio.msglist.holder.component.reply.ReplyTextRelativeLayout".toAppClass()
+        val viewBinding = "androidx.viewbinding.ViewBinding".toAppClass()
+        val binding = component.declaredFields.asSequence().map { it.type }.distinct().single { type ->
+            viewBinding.isAssignableFrom(type) && type.declaredConstructors.any {
+                it.parameterTypes.firstOrNull() == root && it.parameterTypes.count { param -> param == normal } == 1
+            }
+        }
+        val text = binding.declaredFields.single { it.type == normal && !Modifier.isStatic(it.modifiers) }
+            .apply { isAccessible = true }
+        val bind = binding.declaredMethods.single {
+            Modifier.isStatic(it.modifiers) && it.returnType == binding &&
+                it.parameterCount == 1 && it.parameterTypes[0] == View::class.java
+        }
+        // Only the quoted text is an AIOMsgTextView; nicknames, timestamps and labels stay untouched.
+        bind.hook {
+            after {
+                val bound = result ?: return@after
+                runCatching { stateFor(text.get(bound) as View) }
+                    .onFailure { Log.warn("QQ 引用摘要控件绑定失败", it) }
+            }
+        }
+        Log.info("QQ 引用摘要繁简转换 hook 已安装")
     }
 
     private fun enabled() = HookSettings.isEnabled(key, defaultEnabled)

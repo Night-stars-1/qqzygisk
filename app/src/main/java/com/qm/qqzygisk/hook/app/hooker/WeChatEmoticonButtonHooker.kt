@@ -2,8 +2,6 @@ package com.qm.qqzygisk.hook.app.hooker
 
 import android.view.View
 import android.widget.ImageView
-import com.qm.qqzygisk.hook.app.WeChatHostDex
-import com.qm.qqzygisk.hook.app.WeChatShapes
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.app.declaredMember
 import com.qm.qqzygisk.hook.app.declaredSlot
@@ -16,15 +14,27 @@ import java.lang.reflect.Modifier
 
 /** 按 ChatFooter 里 `chat_emoji_button` 的字段读取定位表情按钮，不写死混淆后的方法名。 */
 internal object WeChatEmoticonButtonHooker {
-    private const val CACHE_KEY = "wechat-emoji-button"
+    internal const val CACHE_KEY = "wechat-emoji-button"
     private val installed = mutableSetOf<Method>()
     private var failureLogged = false
+    private var lastError: Throwable? = null
     private var failedLoader: ClassLoader? = null
     private var bindingLoader: ClassLoader? = null
     private var cached: Pair<Method, Field>? = null
 
     @Synchronized
     fun install(): Boolean {
+        if (!HostTargetCache.cached(CACHE_KEY)) return false
+        return installNow()
+    }
+
+    fun discoverAndInstall() {
+        synchronized(this) { failedLoader = null }
+        if (!installNow()) throw lastError ?: IllegalStateException("微信表情按钮定位失败")
+    }
+
+    @Synchronized
+    private fun installNow(): Boolean {
         val loader = appClassLoader
         if (loader === failedLoader) return false
         return try {
@@ -44,6 +54,7 @@ internal object WeChatEmoticonButtonHooker {
             }
             true
         } catch (error: Throwable) {
+            lastError = error
             failedLoader = loader
             if (!failureLogged) {
                 failureLogged = true
@@ -67,7 +78,7 @@ internal object WeChatEmoticonButtonHooker {
     }
 
     private fun discover(loader: ClassLoader, targets: HostTargetCache.Targets): Pair<Method, Field> {
-        val shape = WeChatShapes.button(WeChatHostDex.of(loader))
+        val shape = com.qm.qqzygisk.hook.app.WeChatDexKit.button()
         val footer = Class.forName(shape.owner, false, loader)
         val method = footer.declaredMember(shape.method, emptyArray())
         val field = footer.declaredSlot(shape.field)

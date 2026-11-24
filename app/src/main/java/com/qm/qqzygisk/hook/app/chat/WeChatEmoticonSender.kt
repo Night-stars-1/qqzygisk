@@ -4,8 +4,6 @@ import android.content.Context
 import android.os.Looper
 import com.qm.qqzygisk.hook.app.EmojiShape
 import com.qm.qqzygisk.hook.app.TaskShape
-import com.qm.qqzygisk.hook.app.WeChatHostDex
-import com.qm.qqzygisk.hook.app.WeChatShapes
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
 import com.qm.qqzygisk.hook.app.declaredMember
 import com.qm.qqzygisk.hook.app.declaredSlot
@@ -39,7 +37,7 @@ internal object WeChatEmoticonSender {
     ): Result<Unit> = runCatching {
         check(Looper.myLooper() === Looper.getMainLooper()) { "表情发送必须在主线程启动" }
         val context = checkNotNull(AppParasitics.appContext) { "宿主 Application 尚未初始化" }
-        val protocol = WeChatEmojiProtocol.resolve(appClassLoader)
+        val protocol = WeChatEmojiProtocol.requireReady(appClassLoader)
         val completion = WeChatEmoticonCompletion.forLoader(appClassLoader, protocol).getOrThrow()
         val source = WeChatEmoticonFile.inspect(file)
         WeChatEmoticonSendImage.prepare(
@@ -137,33 +135,59 @@ internal class WeChatEmojiProtocol private constructor(
     }
 
     companion object {
-        private const val CACHE_KEY = "wechat-emoji"
+        internal const val CACHE_KEY = "wechat-emoji"
         private const val EMOJI_API_CLASS = "com.tencent.mm.api.IEmojiInfo"
         private const val EMOJI_INFO_CLASS = "com.tencent.mm.storage.emotion.EmojiInfo"
 
-        private val memory = java.util.WeakHashMap<ClassLoader, WeChatEmojiProtocol>()
-        private val failures = java.util.WeakHashMap<ClassLoader, Throwable>()
+        private val memory = java.util.concurrent.ConcurrentHashMap<ClassLoader, WeChatEmojiProtocol>()
+        private val warming = java.util.concurrent.ConcurrentHashMap<ClassLoader, java.util.concurrent.Future<Result<WeChatEmojiProtocol>>>()
+        private val executor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "qqzygisk-wechat-emoji").apply { isDaemon = true }
+        }
 
-        fun resolve(loader: ClassLoader): WeChatEmojiProtocol {
-            memory[loader]?.let { return it }
-            synchronized(this) {
-                memory[loader]?.let { return it }
-                failures[loader]?.let { throw it }
-                try {
-                    val protocol = HostTargetCache.resolve(CACHE_KEY, loader) { targets ->
-                        if (targets.cached) restore(loader, targets) else discover(loader, targets)
+        /** 进聊天后在后台定位。发送只读取结果，不在主线程扫描安装包。 */
+        fun warm(loader: ClassLoader) {
+            if (memory.containsKey(loader)) return
+            synchronized(warming) {
+                if (memory.containsKey(loader)) return
+                val current = warming[loader]
+                if (current != null && !current.isDone) return
+                if (current != null && current.isDone && current.get().isSuccess) return
+                warming[loader] = executor.submit<Result<WeChatEmojiProtocol>> {
+                    runCatching { resolve(loader) }.also { result ->
+                        result.onSuccess { memory[loader] = it }
                     }
-                    memory[loader] = protocol
-                    return protocol
-                } catch (error: Throwable) {
-                    failures[loader] = error
-                    throw error
                 }
             }
         }
 
+        fun scan(loader: ClassLoader) {
+            resolve(loader)
+        }
+
+        fun requireReady(loader: ClassLoader): WeChatEmojiProtocol {
+            memory[loader]?.let { return it }
+            if (HostTargetCache.cached(CACHE_KEY)) return resolve(loader)
+            val job = warming[loader]
+            if (job != null && job.isDone) return job.get().getOrThrow()
+            warm(loader)
+            error("微信表情通道还在准备,请再点一次")
+        }
+
+        private fun resolve(loader: ClassLoader): WeChatEmojiProtocol {
+            memory[loader]?.let { return it }
+            synchronized(this) {
+                memory[loader]?.let { return it }
+                val protocol = HostTargetCache.resolve(CACHE_KEY, loader) { targets ->
+                    if (targets.cached) restore(loader, targets) else discover(loader, targets)
+                }
+                memory[loader] = protocol
+                return protocol
+            }
+        }
+
         private fun discover(loader: ClassLoader, targets: HostTargetCache.Targets): WeChatEmojiProtocol {
-            val shape = WeChatShapes.emoji(WeChatHostDex.of(loader))
+            val shape = com.qm.qqzygisk.hook.app.WeChatDexKit.emoji()
             val protocol = bind(loader, shape)
             remember(targets, protocol, shape.task != null)
             Log.info("微信表情协议形状: ${shape.manager} ${shape.importMethod}/${shape.lookupMethod}/${shape.sendMethod} task=${shape.task != null}")

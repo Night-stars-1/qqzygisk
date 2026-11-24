@@ -44,13 +44,12 @@ internal object WeChatShapes {
             current = host.superName(current)
         }
         check(chain.size > 1) { "微信 $SETTINGS_ROOT 不在当前安装包里" }
-        val chainSet = chain.toSet()
         val builders = ArrayList<DexId>()
-        host.forEachMethodId { ident ->
-            if (ident.name == "<init>" || ident.parameterTypes.size != 2) return@forEachMethodId
-            if (ident.parameterTypes[0] !in chainSet || ident.parameterTypes[1] != LIST) return@forEachMethodId
-            if (ident.returnType == "void") return@forEachMethodId
-            declaredInstance(host, ident)?.let { builders += it }
+        for (base in chain) {
+            host.forEachMethod(listOf(base, LIST), null) { ident ->
+                if (ident.name == "<init>" || ident.returnType == "void") return@forEachMethod
+                declaredInstance(host, ident)?.let { builders += it }
+            }
         }
         val build = only(builders, "微信设置构建器") { "${it.owner}.${it.name}(${it.parameterTypes[0]})" }
         val item = build.parameterTypes[0]
@@ -216,9 +215,7 @@ internal object WeChatShapes {
             }
         }
         val exist = only(exists.values.toList(), "微信表情文件存在判断") { it.describe() }
-        val limits = host.methodsReferencing(LIMIT_NAME).filter {
-            it.isStatic() && it.parameterTypes.isEmpty() && it.returnType == "int"
-        }
+        val limits = host.methodsReferencing(LIMIT_NAME, emptyList(), "int", staticOnly = true)
         val limit = only(limits, "微信表情尺寸上限") { it.describe() }
         val queue = queue(host, STRING)
         val status = only(statusGetters(host, queue.lookup.returnType, queue.setter), "微信消息状态读取") { it }
@@ -281,9 +278,7 @@ internal object WeChatShapes {
             val msg = itemReads.lastOrNull { it.type == "long" } ?: continue
             val talker = itemReads.lastOrNull { it.type == string } ?: continue
             val emojiFields = ArrayList<DexField>()
-            host.forEachField { field ->
-                if (field.owner == itemOwner && field.type == EMOJI_INFO) emojiFields += field
-            }
+            host.forEachField(itemOwner, EMOJI_INFO) { emojiFields += it }
             if (emojiFields.size != 1) continue
             val lookup = (terminal.steps[lookupAt] as com.qm.qqzygisk.hook.utils.DexStep.Call).method
             val setters = LinkedHashMap<String, DexId>()
@@ -354,14 +349,13 @@ internal object WeChatShapes {
         val talker = only(talkers, "微信表情发送参数里的会话") { it }
         val emoji = only(emojis, "微信表情发送参数里的表情") { it }
         val starts = ArrayList<DexId>()
-        host.forEachMethodId { ident ->
-            if (ident.parameterTypes != listOf(name) || ident.returnType != "boolean" || ident.name == "<init>") return@forEachMethodId
+        host.forEachMethod(listOf(name), "boolean") { ident ->
+            if (ident.name == "<init>") return@forEachMethod
             declaredInstance(host, ident)?.let { starts += it }
         }
         val start = only(starts, "微信表情任务启动") { it.describe() }
         val parameterFields = ArrayList<DexField>()
-        host.forEachField { field ->
-            if (field.type != name) return@forEachField
+        host.forEachField(null, name) { field ->
             val ownsFinish = host.methods(field.owner).any { body ->
                 body.complete && !body.id.isStatic() && body.id.parameterTypes.isEmpty() &&
                     body.invokes.any { it.name == "getMsgId" && it.parameterTypes.isEmpty() }
@@ -377,19 +371,14 @@ internal object WeChatShapes {
         ) { it.id.name }
         val infos = taskMethods.mapNotNull { body ->
             val fields = ArrayList<DexField>()
-            host.forEachField { field ->
-                if (field.owner == body.id.returnType && field.type == MSG_ID) fields += field
-            }
+            host.forEachField(body.id.returnType, MSG_ID) { fields += it }
             if (fields.size == 1) body to fields[0] else null
         }
         val (info, identity) = only(infos, "微信表情任务消息") { it.first.id.name }
         val messageIds = ArrayList<DexField>()
         val messageTalkers = ArrayList<DexField>()
-        host.forEachField { field ->
-            if (field.owner != MSG_ID) return@forEachField
-            if (field.type == "long") messageIds += field
-            if (field.type == string) messageTalkers += field
-        }
+        host.forEachField(MSG_ID, "long") { messageIds += it }
+        host.forEachField(MSG_ID, string) { messageTalkers += it }
         val messageId = only(messageIds, "微信 MsgIdTalker 消息号") { it.name }
         val messageTalker = only(messageTalkers, "微信 MsgIdTalker 会话") { it.name }
         return TaskShape(

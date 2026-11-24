@@ -8,7 +8,7 @@ zygisk = "e985fbf57a-SNAPSHOT"
 lsparanoid = "0.6.0"
 browser = "1.9.0"
 appcompat = "1.7.1"
-
+dexkit = "2.0.7"
 activityCompose = "1.10.1"
 composeBom = "2025.08.01"
 
@@ -40,6 +40,7 @@ androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterfa
 material-components = { group = "com.google.android.material", name = "material", version.ref = "materialComponents" }
 markwon-core = { module = "io.noties.markwon:core", version.ref = "markwon" }
 markwon-tables = { module = "io.noties.markwon:ext-tables", version.ref = "markwon" }
+dexkit = { module = "org.luckypray:dexkit", version.ref = "dexkit" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
