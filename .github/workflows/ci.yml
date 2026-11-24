@@ -121,15 +121,28 @@ jobs:
           }
           EOF
           cp changelog.md dist/changelog.md
+          python3 - <<'PY'
+          from pathlib import Path
+          lines = Path("changelog.md").read_text(encoding="utf-8").splitlines()
+          notes = []
+          headings = 0
+          for line in lines:
+              if line.startswith("# "):
+                  headings += 1
+                  if headings == 2:
+                      break
+              notes.append(line)
+          Path("dist/release-notes.md").write_text("\n".join(notes).strip() + "\n", encoding="utf-8")
+          PY
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
+          body_path: dist/release-notes.md
           files: |
             dist/qqhook.zip
             dist/update.json
             dist/changelog.md
-          generate_release_notes: true
           fail_on_unmatched_files: true

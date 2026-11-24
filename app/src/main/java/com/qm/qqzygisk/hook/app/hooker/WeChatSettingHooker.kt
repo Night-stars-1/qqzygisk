@@ -4,9 +4,14 @@ import android.app.Activity
 import android.content.Context
 import android.os.Bundle
 import android.view.View
+import com.qm.qqzygisk.hook.app.SettingShape
+import com.qm.qqzygisk.hook.app.WeChatHostDex
+import com.qm.qqzygisk.hook.app.WeChatShapes
 import com.qm.qqzygisk.hook.app.data.HostData.appClassLoader
+import com.qm.qqzygisk.hook.app.declaredMember
 import com.qm.qqzygisk.hook.app.host.WeChatHostBridge
 import com.qm.qqzygisk.hook.extension.hook
+import com.qm.qqzygisk.hook.utils.HostTargetCache
 import com.qm.qqzygisk.hook.utils.HookSettings
 import com.qm.qqzygisk.hook.utils.Log
 import com.qm.qqzygisk.hook.utils.registerModuleAppActivities
@@ -19,74 +24,29 @@ import java.util.WeakHashMap
 /**
  * 微信 setting_new 页面；在宿主排好序后插入，避免破坏前驱链。
  *
- * 保留已确证的分发协议，按 builder 签名与 itemBase 形态整体校验，不按短名猜：
- * - 8.0.79 (code 3182): ib4.i + cc4.g.d(ib4.i, List) -> la6.l
- * - 另一已支持分发变体: la4.i + fb4.g.d(la4.i, List)
- * - 8.0.80 (code 3220): na4.i + hb4.g.d(na4.i, List) -> pa6.l
- * 任一必需 getter 或完整形状缺失时明确放弃安装，绝不把同名无关类当成设置构建器。
+ * 构建器、标题、键、摘要、图标、点击和可见性都按方法形状定位，不写死混淆短名。
+ * 同一宿主版本把定位结果写入 `wechat-settings.json`，下次启动直接恢复。
  */
 internal object WeChatSettingHooker {
     private const val ROOT_GROUP =
         "com.tencent.mm.plugin.setting.ui.setting_new.settings.SettingGroupMain"
     private const val ITEM_TITLE = "QQ Zygisk"
     private const val ITEM_KEY = "QQZygisk_Settings"
-
-    private class Protocol(
-        val itemBase: String,
-        val builder: String,
-        val builderResult: String?,
-        val click: String,
-        val activityGetters: List<String>,
-        val title: String,
-        val key: String,
-        val summary: String,
-        val summaryResource: String,
-        val icon: String,
-        val ordering: String,
-        val drawable: String? = null,
-        val visible: String? = null,
-    )
+    private const val CACHE_KEY = "wechat-settings"
 
     private class Binding(
-        val protocol: Protocol,
         val buildMethod: Method,
         val itemBase: Class<*>,
         val template: Class<*>,
-    )
-
-    private val protocols = listOf(
-        Protocol(
-            itemBase = "ib4.i",
-            builder = "cc4.g",
-            builderResult = "la6.l",
-            click = "f8",
-            activityGetters = listOf("getActivity", "getContext"),
-            title = "R7", key = "P7", summary = "U7", summaryResource = "b8",
-            icon = "N7", ordering = "Q7",
-        ),
-        Protocol(
-            itemBase = "la4.i",
-            builder = "fb4.g",
-            builderResult = null,
-            click = "g8",
-            activityGetters = listOf("getMvvmActivity", "getActivity", "getContext"),
-            title = "R7", key = "P7", summary = "U7", summaryResource = "b8",
-            icon = "N7", ordering = "Q7",
-        ),
-        Protocol(
-            itemBase = "na4.i",
-            builder = "hb4.g",
-            builderResult = "pa6.l",
-            click = "g8",
-            activityGetters = listOf("getContext", "getActivity"),
-            title = "S7", key = "Q7", summary = "c8", summaryResource = "e8",
-            icon = "O7", ordering = "R7", drawable = "Y7", visible = "f8",
-        ),
-    )
-
-    private val templateCandidates = listOf(
-        "com.tencent.mm.plugin.setting.ui.setting_new.settings.friend_privacy.SettingActivityItemNewFriendCommonSayHi",
-        "com.tencent.mm.plugin.setting.ui.setting_new.settings.friend_privacy.SettingActivityItemCommonSayHi",
+        val title: Method,
+        val key: Method,
+        val summary: Method,
+        val summaryResource: Method,
+        val icon: Method,
+        val drawable: Method?,
+        val visible: Method,
+        val click: Method,
+        val activityGetters: List<Method>,
     )
 
     private val clickParams: Array<Class<*>> = arrayOf(
@@ -99,12 +59,15 @@ internal object WeChatSettingHooker {
     private val itemOwners = WeakHashMap<Any, WeakReference<Activity>>()
     private var installing = false
     private var failureLogged = false
+    private var failedLoader: ClassLoader? = null
     private var bindingLoader: ClassLoader? = null
     private var cachedBinding: Binding? = null
 
     @Synchronized
     fun install(): Boolean {
         if (installing) return false
+        val loader = appClassLoader
+        if (loader === failedLoader) return false
         installing = true
         return try {
             val binding = resolve()
@@ -121,14 +84,15 @@ internal object WeChatSettingHooker {
             }
             installedBuilders.add(binding.buildMethod)
             Log.info(
-                "微信设置入口 hook 已安装: ${binding.buildMethod.declaringClass.name}.d " +
+                "微信设置入口 hook 已安装: ${binding.buildMethod.declaringClass.name}.${binding.buildMethod.name} " +
                     "(${binding.itemBase.name} -> ${binding.template.name})",
             )
             true
         } catch (error: Throwable) {
+            failedLoader = loader
             if (!failureLogged) {
                 failureLogged = true
-                Log.error("安装微信设置入口失败，等待宿主加载后重试", error)
+                Log.error("安装微信设置入口失败", error)
             }
             false
         } finally {
@@ -139,106 +103,110 @@ internal object WeChatSettingHooker {
     private fun resolve(): Binding {
         val loader = appClassLoader
         if (bindingLoader === loader) cachedBinding?.let { return it }
-        val failures = ArrayList<String>(protocols.size)
-        for (protocol in protocols) {
-            try {
-                val binding = resolve(protocol)
-                cachedBinding = binding
-                bindingLoader = loader
-                return binding
-            } catch (error: Throwable) {
-                failures += "${protocol.builder}: ${error.message}"
-            }
+        val binding = HostTargetCache.resolve(CACHE_KEY, loader) { targets ->
+            if (targets.cached) restore(targets) else discover(loader, targets)
         }
-        error("没有匹配的微信设置协议: ${failures.joinToString("; ")}")
+        cachedBinding = binding
+        bindingLoader = loader
+        failedLoader = null
+        return binding
     }
 
-    private fun resolve(protocol: Protocol): Binding {
-        val builder = Class.forName(protocol.builder, false, appClassLoader)
-        val buildMethod = builder.declaredMethods.singleOrNull { method ->
-            method.name == "d" &&
-                !Modifier.isStatic(method.modifiers) &&
-                method.parameterTypes.size == 2 &&
-                method.parameterTypes[0].name == protocol.itemBase &&
-                List::class.java.isAssignableFrom(method.parameterTypes[1]) &&
-                (protocol.builderResult == null || method.returnType.name == protocol.builderResult)
-        } ?: error("${protocol.builder}.d(${protocol.itemBase}, List) 形状不匹配")
-        // 返回值必须是含两个非静态字段的二元组（la6.l / kotlin.Pair 形状），注入依赖它。
-        val resultType = buildMethod.returnType
+    private fun discover(loader: ClassLoader, targets: HostTargetCache.Targets): Binding {
+        val shape = WeChatShapes.settings(WeChatHostDex.of(loader))
+        val itemBase = Class.forName(shape.itemBase, false, loader)
+        val build = Class.forName(shape.builderOwner, false, loader).declaredMember(
+            shape.builderName,
+            arrayOf(itemBase, List::class.java),
+        )
+        check(!Modifier.isStatic(build.modifiers) && build.returnType.name == shape.builderReturn) {
+            "微信设置构建器 ${build.declaringClass.name}.${build.name} 形状已变化"
+        }
+        val resultType = build.returnType
         if (resultType == Void.TYPE || resultType.isPrimitive || resultType.isArray ||
             resultType.declaredFields.count { !Modifier.isStatic(it.modifiers) } != 2 ||
             resultType.declaredConstructors.none { ctor ->
                 ctor.parameterTypes.size == 2 && ctor.parameterTypes.none { it.isPrimitive }
             }
         ) {
-            error("${protocol.builder}.d 返回值不是二元组: ${resultType.name}")
+            error("${build.declaringClass.name}.${build.name} 返回值不是二元组: ${resultType.name}")
         }
-        val itemBase = buildMethod.parameterTypes[0]
-        validateItemBase(itemBase, protocol)
-        val loader = itemBase.classLoader ?: appClassLoader
-        val template = templateCandidates.asSequence()
-            .mapNotNull { name ->
-                runCatching { Class.forName(name, false, loader) }.getOrNull()
-            }
-            .firstOrNull { candidate -> isUsableTemplate(candidate, itemBase, protocol) }
-            ?: error("没有形状完整的微信设置项模板")
-        return Binding(protocol, buildMethod, itemBase, template)
+        val template = Class.forName(shape.template, false, loader)
+        check(!Modifier.isAbstract(template.modifiers) && itemBase.isAssignableFrom(template)) {
+            "微信设置项模板 ${template.name} 不能实例化"
+        }
+        val binding = Binding(
+            buildMethod = build,
+            itemBase = itemBase,
+            template = template,
+            title = template.declaredMember(shape.title, emptyArray()),
+            key = template.declaredMember(shape.key, emptyArray()),
+            summary = template.declaredMember(shape.summary, emptyArray()),
+            summaryResource = template.declaredMember(shape.summaryResource, emptyArray()),
+            icon = template.declaredMember(shape.icon, emptyArray()),
+            drawable = shape.drawable?.let { template.declaredMember(it, emptyArray()) },
+            visible = template.declaredMember(shape.visible, emptyArray()),
+            click = template.declaredMember(shape.click, clickParams),
+            activityGetters = shape.activityGetters.map { name ->
+                itemBase.declaredMember(name, emptyArray()).also { method ->
+                    check(Activity::class.java.isAssignableFrom(method.returnType)) {
+                        "${itemBase.name}.$name 不是 Activity getter"
+                    }
+                }
+            },
+        )
+        check(binding.activityGetters.isNotEmpty()) { "${itemBase.name} 缺少 Activity getter" }
+        remember(targets, binding)
+        Log.info("微信设置形状: ${shape.describe()}")
+        return binding
     }
 
-    /** 基类可以声明 abstract 项方法，但协议必需的方法必须齐全，Activity 由继承的 getter 提供。 */
-    private fun validateItemBase(itemBase: Class<*>, protocol: Protocol) {
-        val primaryGetter = protocol.activityGetters.firstOrNull()
-        val activityGetter = primaryGetter?.let { findMethod(itemBase, it, emptyArray()) }
-        if (activityGetter == null ||
-            !Activity::class.java.isAssignableFrom(activityGetter.returnType)
-        ) {
-            error("${itemBase.name} 缺少 Activity getter $primaryGetter")
+    private fun restore(targets: HostTargetCache.Targets): Binding = Binding(
+        buildMethod = targets.method("build"),
+        itemBase = targets.type("itemBase"),
+        template = targets.type("template"),
+        title = targets.method("title"),
+        key = targets.method("key"),
+        summary = targets.method("summary"),
+        summaryResource = targets.method("summaryResource"),
+        icon = targets.method("icon"),
+        drawable = if (targets.values.has("drawable")) targets.method("drawable") else null,
+        visible = targets.method("visible"),
+        click = targets.method("click"),
+        activityGetters = restoreMethods(targets, "activity"),
+    )
+
+    private fun remember(targets: HostTargetCache.Targets, binding: Binding) {
+        targets.method("build") { binding.buildMethod }
+        targets.type("itemBase") { binding.itemBase }
+        targets.type("template") { binding.template }
+        targets.method("title") { binding.title }
+        targets.method("key") { binding.key }
+        targets.method("summary") { binding.summary }
+        targets.method("summaryResource") { binding.summaryResource }
+        targets.method("icon") { binding.icon }
+        binding.drawable?.let { targets.method("drawable") { it } }
+        targets.method("visible") { binding.visible }
+        targets.method("click") { binding.click }
+        binding.activityGetters.forEachIndexed { index, method ->
+            targets.method("activity$index") { method }
         }
-        // 排序 getter 必须存在，但本入口在宿主排序之后插入，不改写它。
-        listOfNotNull(protocol.title, protocol.key, protocol.summary, protocol.summaryResource,
-            protocol.icon, protocol.ordering, protocol.drawable, protocol.visible).forEach { name ->
-            findMethod(itemBase, name, emptyArray()) ?: error("${itemBase.name} 缺少 $name")
-        }
-        findMethod(itemBase, protocol.click, clickParams)
-            ?: error("${itemBase.name} 缺少 ${protocol.click}(Context,View,int)")
-        findMethod(itemBase, "onCreate", arrayOf(Bundle::class.java))
-            ?: error("${itemBase.name} 缺少 onCreate(Bundle)")
     }
 
-    /** 模板必须可实例化，且覆盖/继承到全部待 hook 的 getter 与点击方法。 */
-    private fun isUsableTemplate(
-        candidate: Class<*>,
-        itemBase: Class<*>,
-        protocol: Protocol,
-    ): Boolean {
-        if (Modifier.isAbstract(candidate.modifiers)) return false
-        if (!itemBase.isAssignableFrom(candidate)) return false
-        if (candidate.declaredConstructors.none { ctor ->
-                ctor.parameterTypes.size == 1 &&
-                    Activity::class.java.isAssignableFrom(ctor.parameterTypes[0])
-            }
-        ) {
-            return false
+    private fun restoreMethods(targets: HostTargetCache.Targets, prefix: String): List<Method> {
+        val methods = ArrayList<Method>()
+        var index = 0
+        while (targets.values.has("$prefix$index")) {
+            methods += targets.method("$prefix$index")
+            index++
         }
-        val gettersUsable = listOfNotNull(protocol.title, protocol.key, protocol.summary,
-            protocol.summaryResource, protocol.icon, protocol.drawable, protocol.visible).all { name ->
-            val method = findMethod(candidate, name, emptyArray()) ?: return@all false
-            !Modifier.isStatic(method.modifiers) &&
-                !Modifier.isAbstract(method.modifiers) &&
-                method.returnType != Void.TYPE
-        }
-        if (!gettersUsable) return false
-        val click = findMethod(candidate, protocol.click, clickParams) ?: return false
-        if (Modifier.isStatic(click.modifiers) || Modifier.isAbstract(click.modifiers)) return false
-        return findMethod(candidate, "onCreate", arrayOf(Bundle::class.java)) != null
+        return methods
     }
 
     private fun inject(root: Any, pair: Any, binding: Binding): Any {
-        val activity = activityOf(root, binding.protocol.activityGetters)
+        val activity = activityOf(root, binding.activityGetters)
             ?: error("微信设置根项没有宿主 Activity")
         HookSettings.initialize(activity)
-        // builder 返回二元组(root, orderedChildren)。保留宿主的顺序和所有原始项，
-        // 不把新项塞进 builder 内部的 HashMap，也不依赖一次性的 Activity 标记。
         val childrenField = pair.javaClass.declaredFields.firstOrNull { field ->
             if (Modifier.isStatic(field.modifiers)) return@firstOrNull false
             field.isAccessible = true
@@ -258,10 +226,8 @@ internal object WeChatSettingHooker {
         return ctor.newInstance(root, updated)
     }
 
-    private fun activityOf(item: Any, getters: List<String>): Activity? {
-        for (name in getters) {
-            val method = findMethod(item.javaClass, name, emptyArray()) ?: continue
-            method.isAccessible = true
+    private fun activityOf(item: Any, getters: List<Method>): Activity? {
+        for (method in getters) {
             val value = runCatching { method.invoke(item) }.getOrNull()
             if (value is Activity) return value
         }
@@ -276,7 +242,6 @@ internal object WeChatSettingHooker {
         val item = ctor.newInstance(activity)
         itemOwners[item] = WeakReference(activity)
         hookItemMethods(binding)
-        // 该实例不在宿主的 UIComponent 集合里，显式建立 diff 使用的初始快照。
         val onCreate = findMethod(binding.template, "onCreate", arrayOf(Bundle::class.java))
             ?: error("微信设置项模板缺少 onCreate(Bundle)")
         onCreate.isAccessible = true
@@ -285,9 +250,7 @@ internal object WeChatSettingHooker {
     }
 
     private fun hookItemMethods(binding: Binding) {
-        fun override(name: String, value: Any?) {
-            val method = findMethod(binding.template, name, emptyArray())
-                ?: error("微信设置项缺少 $name")
+        fun override(method: Method, value: Any?) {
             if (!installedItemMethods.add(method)) return
             method.hook {
                 before {
@@ -295,19 +258,15 @@ internal object WeChatSettingHooker {
                 }
             }
         }
-        val protocol = binding.protocol
-        override(protocol.title, ITEM_TITLE)
-        override(protocol.key, ITEM_KEY)
-        override(protocol.summary, "")
-        override(protocol.summaryResource, null)
-        override(protocol.icon, null)
-        protocol.drawable?.let { override(it, null) }
-        protocol.visible?.let { override(it, true) }
-        // 本入口在排序后插入，不进入宿主的 parent/front 链，也不影响其它实例。
-        val click = findMethod(binding.template, binding.protocol.click, clickParams)
-            ?: error("微信设置项缺少点击方法 ${binding.protocol.click}")
-        if (installedItemMethods.add(click)) {
-            click.hook {
+        override(binding.title, ITEM_TITLE)
+        override(binding.key, ITEM_KEY)
+        override(binding.summary, "")
+        override(binding.summaryResource, null)
+        override(binding.icon, null)
+        binding.drawable?.let { override(it, null) }
+        override(binding.visible, true)
+        if (installedItemMethods.add(binding.click)) {
+            binding.click.hook {
                 before {
                     val activity = itemOwners[instance]?.get() ?: return@before
                     result = null
@@ -326,3 +285,8 @@ internal object WeChatSettingHooker {
             .flatMap { it.declaredMethods.asSequence() }
             .firstOrNull { it.name == name && it.parameterTypes.contentEquals(params) }
 }
+
+private fun SettingShape.describe(): String =
+    "$builderOwner.$builderName($builderParameter,$builderReturn) key=$key title=$title " +
+        "summary=$summary res=$summaryResource icon=$icon drawable=$drawable visible=$visible " +
+        "click=$click template=$template"

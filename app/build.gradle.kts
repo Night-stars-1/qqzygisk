@@ -36,8 +36,8 @@ android {
         minSdk = 28
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 31
-        versionName = "1.30"
+        versionCode = 32
+        versionName = "1.31"
         ndk.abiFilters.addAll(arrayOf("armeabi-v7a", "arm64-v8a"))
     }
 
@@ -107,6 +107,9 @@ android {
 //    }
 
     androidResources.additionalParameters += listOf("--allow-reserved-package-id", "--package-id", "0x15")
+    testOptions.unitTests.all {
+        it.maxHeapSize = "2048m"
+    }
 }
 
 /**

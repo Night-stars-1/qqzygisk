@@ -6,23 +6,18 @@ import com.qm.qqzygisk.hook.extension.hook
 import com.qm.qqzygisk.hook.utils.Log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
-import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 微信 8.0.79（code3182、3200）和 8.0.80（code3220）原生表情上传完成观察器。
- * 真实 DEX 的队列项字段均为 `a:long`（msgId）、`b:String`（talker）、
- * `c:EmojiInfo`；发送队列均为 `b0.m`。3220 的 `b0.Mj(int,int)` 先移除队首，
- * 再根据上传 errType/errCode 写入状态 2（成功）或 5（失败），由
- * `yx0.k0.cj(talker,msgId)` 查回 `f9`，读取 `N0()` 确认存储终态。
- * 旧版分别使用 `b0.Gj`、`oy0.k0.Zi` / `ox0.k0.Vi` 及 `e9.M0()`。
+ * 微信原生表情上传完成观察器。队列、消息查询和可选的发送任务都来自
+ * [WeChatEmojiProtocol] 的形状定位，不写死混淆后的类名。
  *
  * 原生发送返回 true 不代表发送成功。这里只观察，不修改原生参数、返回值
- * 或宿主状态；非本次提交产生的消息不会回调。注册表不在 [WeChatEmojiVariant] 内时
- * 在原生发送之前返回失败，不做启动后的假成功。
+ * 或宿主状态；非本次提交产生的消息不会回调。协议无法定位时在原生发送之前
+ * 返回失败，不做启动后的假成功。
  */
 internal class WeChatEmoticonCompletion private constructor(
     private val ownerClass: Class<*>,
@@ -127,7 +122,7 @@ internal class WeChatEmoticonCompletion private constructor(
     }
 
     /** 只认本次同步提交期间 Nj 接收的参数对象；J 完成后再按其消息 ID 查库。 */
-    private fun installTask(protocol: TaskProtocol) {
+    private fun installTask(protocol: WeChatEmojiTask) {
         protocol.start.hook {
             before {
                 runCatching {
@@ -297,24 +292,7 @@ internal class WeChatEmoticonCompletion private constructor(
         var taskAccepted = false
     }
 
-    private class TaskProtocol(
-        val start: Method,
-        val finish: Method,
-        val taskTalker: Field,
-        val taskEmoji: Field,
-        val taskParameters: Field,
-        val taskInfo: Method,
-        val infoMessage: Field,
-        val messageId: Field,
-        val messageTalker: Field,
-    )
-
     companion object {
-        private const val EMOJI_API_CLASS = "com.tencent.mm.api.IEmojiInfo"
-        private const val OWNER_CLASS = "com.tencent.mm.feature.emoji.b0"
-        private const val ITEM_CLASS = "com.tencent.mm.feature.emoji.i0"
-        private const val EMOJI_INFO_CLASS = "com.tencent.mm.storage.emotion.EmojiInfo"
-        private const val QUEUE_FIELD = "m"
         private const val STATUS_SUCCESS = 2
         private const val STATUS_FAILURE = 5
         private const val TIMEOUT_MS = 60_000L
@@ -324,9 +302,9 @@ internal class WeChatEmoticonCompletion private constructor(
 
         /** 每个 ClassLoader 只安装一次；安装失败不缓存，仍可重试。 */
         @Synchronized
-        fun forLoader(loader: ClassLoader, lookup: Method): Result<WeChatEmoticonCompletion> {
+        fun forLoader(loader: ClassLoader, protocol: WeChatEmojiProtocol): Result<WeChatEmoticonCompletion> {
             cache[loader]?.let { return Result.success(it) }
-            return runCatching { create(loader, lookup) }
+            return runCatching { create(protocol) }
                 .recoverCatching { error ->
                     val cause = generateSequence(error) { it.cause }.last()
                     throw IllegalStateException(
@@ -337,125 +315,22 @@ internal class WeChatEmoticonCompletion private constructor(
                 .onSuccess { cache[loader] = it }
         }
 
-        private fun create(loader: ClassLoader, lookup: Method): WeChatEmoticonCompletion {
-            val variant = WeChatEmojiVariant.require(lookup.declaringClass)
-            WeChatEmojiVariant.verifyLookup(lookup, variant)
-
-            val ownerClass = Class.forName(OWNER_CLASS, false, loader)
-            val itemClass = Class.forName(ITEM_CLASS, false, loader)
-            val emojiApi = Class.forName(EMOJI_API_CLASS, false, loader)
-            val messageClass = Class.forName(variant.messageClass, false, loader)
-            val emojiInfoClass = Class.forName(EMOJI_INFO_CLASS, false, loader)
-            variant.enqueueMethod?.let { name ->
-                val enqueue = ownerClass.getMethod(
-                    name,
-                    String::class.java,
-                    emojiInfoClass,
-                    messageClass,
-                    Class.forName("com.tencent.mm.plugin.msg.MsgIdTalker", false, loader),
-                    Class.forName("ga5.d", false, loader),
-                    Integer.TYPE,
-                )
-                check(!Modifier.isStatic(enqueue.modifiers) && enqueue.returnType == Void.TYPE) {
-                    "微信 ${ownerClass.name}.$name 入队签名已变化"
-                }
+        private fun create(protocol: WeChatEmojiProtocol): WeChatEmoticonCompletion =
+            WeChatEmoticonCompletion(
+                protocol.queueOwner,
+                protocol.lookup,
+                protocol.itemClass,
+                protocol.queueField,
+                protocol.msgIdField,
+                protocol.talkerField,
+                protocol.emojiField,
+                protocol.emojiMd5,
+                protocol.messageLookup,
+                protocol.statusMethod,
+            ).also { completion ->
+                completion.install(protocol.terminal)
+                protocol.task?.let(completion::installTask)
             }
-
-            val queue = ownerClass.getDeclaredField(QUEUE_FIELD).apply {
-                check(!Modifier.isStatic(modifiers) && List::class.java.isAssignableFrom(type)) {
-                    "微信 ${ownerClass.name}.$QUEUE_FIELD 不是发送队列"
-                }
-                isAccessible = true
-            }
-            val terminal = ownerClass.getMethod(variant.terminalMethod, Integer.TYPE, Integer.TYPE).apply {
-                check(!Modifier.isStatic(modifiers) && returnType == Void.TYPE) {
-                    "微信 ${ownerClass.name}.${variant.terminalMethod}(int,int) 形状已变化"
-                }
-                isAccessible = true
-            }
-            val msgId = itemClass.getDeclaredField("a").apply {
-                check(!Modifier.isStatic(modifiers) && type == java.lang.Long.TYPE) { "微信 ${itemClass.name}.a 不是 long" }
-                isAccessible = true
-            }
-            val talker = itemClass.getDeclaredField("b").apply {
-                check(!Modifier.isStatic(modifiers) && type == String::class.java) { "微信 ${itemClass.name}.b 不是 String" }
-                isAccessible = true
-            }
-            val emoji = itemClass.getDeclaredField("c").apply {
-                check(!Modifier.isStatic(modifiers) && type == emojiInfoClass && emojiApi.isAssignableFrom(type)) {
-                    "微信 ${itemClass.name}.c 不是 EmojiInfo"
-                }
-                isAccessible = true
-            }
-            // 队列项由微信创建；观察器只读取字段，不依赖宿主构造器的参数形状。
-            val md5 = emojiApi.getMethod("getMd5").apply {
-                check(!Modifier.isStatic(modifiers) && returnType == String::class.java) { "微信 IEmojiInfo.getMd5 形状已变化" }
-            }
-            val messageLookup = Class.forName(variant.messageLookupClass, false, loader)
-                .getMethod(variant.messageLookupMethod, String::class.java, java.lang.Long.TYPE)
-                .apply {
-                    check(Modifier.isStatic(modifiers) && returnType == messageClass) {
-                        "微信 ${variant.messageLookupClass}.${variant.messageLookupMethod} 形状已变化"
-                    }
-                }
-            val status = messageClass.getMethod(variant.statusMethod).apply {
-                check(!Modifier.isStatic(modifiers) && returnType == java.lang.Integer.TYPE) {
-                    "微信 ${variant.messageClass}.${variant.statusMethod} 形状已变化"
-                }
-                isAccessible = true
-            }
-
-            val taskProtocol = if (variant.sendTask) resolveTask(loader, emojiApi) else null
-            return WeChatEmoticonCompletion(
-                ownerClass,
-                lookup,
-                itemClass,
-                queue,
-                msgId,
-                talker,
-                emoji,
-                md5,
-                messageLookup,
-                status,
-            ).also {
-                it.install(terminal)
-                taskProtocol?.let(it::installTask)
-            }
-        }
-
-        private fun resolveTask(loader: ClassLoader, emojiApi: Class<*>): TaskProtocol {
-            val service = Class.forName("k60.t", false, loader)
-            val params = Class.forName("com.tencent.mm.feature.emoji.kb", false, loader)
-            val task = Class.forName("k60.p0", false, loader)
-            val info = Class.forName("hr3.i0", false, loader)
-            val taskResult = Class.forName("hr3.o0", false, loader)
-            val identity = Class.forName("com.tencent.mm.plugin.msg.MsgIdTalker", false, loader)
-            fun field(owner: Class<*>, name: String, type: Class<*>): Field =
-                owner.getDeclaredField(name).apply {
-                    check(!Modifier.isStatic(modifiers) && this.type == type) {
-                        "微信 ${owner.name}.$name 形状已变化"
-                    }
-                    isAccessible = true
-                }
-            fun method(owner: Class<*>, name: String, returnType: Class<*>, vararg args: Class<*>): Method =
-                owner.getMethod(name, *args).apply {
-                    check(!Modifier.isStatic(modifiers) && this.returnType == returnType) {
-                        "微信 ${owner.name}.$name 签名已变化"
-                    }
-                    isAccessible = true
-                }
-            return TaskProtocol(
-                start = method(service, "Nj", java.lang.Boolean.TYPE, params),
-                finish = method(task, "J", taskResult),
-                taskTalker = field(params, "a", String::class.java),
-                taskEmoji = field(params, "b", emojiApi),
-                taskParameters = field(task, "i", params),
-                taskInfo = method(task, "h", info),
-                infoMessage = field(info, "g", identity),
-                messageId = field(identity, "d", java.lang.Long.TYPE),
-                messageTalker = field(identity, "e", String::class.java),
-            )
-        }
 
         private fun unconfirmed() = IllegalStateException(UNCONFIRMED)
     }
