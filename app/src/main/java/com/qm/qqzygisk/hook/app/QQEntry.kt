@@ -8,6 +8,7 @@ import com.qm.qqzygisk.hook.app.data.HostData
 import com.qm.qqzygisk.hook.app.data.HostData.toAppClass
 import com.qm.qqzygisk.hook.app.chat.NtImageRkeyProvider
 import com.qm.qqzygisk.hook.app.hooker.AntiRevokeHooker
+import com.qm.qqzygisk.hook.app.hooker.AtMemberOrderHooker
 import com.qm.qqzygisk.hook.app.hooker.BiliMiniAppWebCardHooker
 import com.qm.qqzygisk.hook.app.hooker.ChatMenuHooker
 import com.qm.qqzygisk.hook.app.hooker.ChineseSimplifyHooker
@@ -175,6 +176,8 @@ object QQEntry {
         BiliMiniAppWebCardHooker.load()
         // 引用自动 @ 独立安装，协议漂移不影响其它宿主 UI hook。
         DisableReplyAtHooker.load()
+        // @ 列表排序独立安装，协议漂移不影响其它宿主 UI hook。
+        AtMemberOrderHooker.load()
         // 正文转换只在宿主 UI ClassLoader 就绪后安装，失败不阻断其他功能。
         ChineseSimplifyHooker.load()
     }

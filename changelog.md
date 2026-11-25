@@ -1,3 +1,19 @@
+# qqhook v1.33
+
+QQ 群聊的 @ 成员列表现在可以改排序，下次打开面板即按新顺序显示。
+
+## 新增
+
+- QQ 模块设置新增「@ 排序」，放在开关下方。默认仍是特别关心置顶、其余按拼音；也可改为最近发言、最近入群，或群主和管理员优先。全体成员等非成员项留在原位。
+
+## 下载
+
+| 平台 | 安装包 | 架构 |
+| --- | --- | --- |
+| Android 9 及以上（Zygisk 模块） | [qqhook.zip](https://github.com/Night-stars-1/qqzygisk/releases/download/v1.33/qqhook.zip) | arm64-v8a、armeabi-v7a |
+
+[完整变更：v1.32...v1.33](https://github.com/Night-stars-1/qqzygisk/compare/v1.32...v1.33)
+
 # qqhook v1.32
 
 微信首次适配提前到进入应用时，并显示扫描进度。QQ 的繁体转简体现在也覆盖回复消息。

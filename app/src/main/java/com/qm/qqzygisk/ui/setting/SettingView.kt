@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -15,24 +16,28 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material3.Button
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,9 +48,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import android.os.Handler
 import android.os.Looper
@@ -58,6 +66,7 @@ import com.qm.qqzygisk.hook.app.QQEntry.settings
 import com.qm.qqzygisk.hook.app.host.HostType
 import com.qm.qqzygisk.hook.app.chat.ImageDirectoryGrants
 import com.qm.qqzygisk.hook.app.chat.ImageFolderStore
+import com.qm.qqzygisk.hook.app.hooker.AtMemberOrderHooker
 import com.qm.qqzygisk.hook.app.hooker.EmoticonButtonHooker
 import com.qm.qqzygisk.hook.utils.HookSettings
 import com.qm.qqzygisk.ui.component.setting.SettingSwitch
@@ -147,6 +156,9 @@ private fun MainSettings(
                 }
             )
         }
+        if (ImageFolderStore.hostType == HostType.QQ) {
+            AtMemberOrderSetting()
+        }
         var historyLimitText by remember {
             mutableStateOf(ImageFolderStore.historyLimit().toString())
         }
@@ -197,6 +209,104 @@ private fun MainSettings(
         HorizontalDivider()
         ModuleUpdateSetting()
     }
+}
+
+@Composable
+private fun AtMemberOrderSetting() {
+    var mode by remember { mutableIntStateOf(AtMemberOrderHooker.mode()) }
+    var open by rememberSaveable { mutableStateOf(false) }
+    var pending by remember { mutableIntStateOf(mode) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                pending = mode
+                open = true
+            }
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = AtMemberOrderHooker.name,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = AtMemberOrderHooker.modeTitle(mode),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (!open) return
+    AlertDialog(
+        onDismissRequest = { open = false },
+        title = { Text("排序方式") },
+        text = {
+            Column {
+                AtMemberOrderHooker.modes.forEach { option ->
+                    val selected = pending == option.id
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (selected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
+                            .clickable { pending = option.id }
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CompositionLocalProvider(
+                            LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = null,
+                            )
+                        }
+                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                            Text(
+                                text = option.title,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = option.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { open = false }) {
+                Text("取消")
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    HookSettings.setInt(AtMemberOrderHooker.KEY, pending)
+                    mode = pending
+                    open = false
+                },
+            ) {
+                Text("确定")
+            }
+        },
+    )
 }
 
 @Composable
